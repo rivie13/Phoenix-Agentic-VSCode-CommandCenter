@@ -1,0 +1,60 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Command Center: Install",
+      "type": "shell",
+      "command": "npm install",
+      "problemMatcher": []
+    },
+    {
+      "label": "Command Center: Compile",
+      "type": "shell",
+      "command": "npm run compile",
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "Command Center: Watch",
+      "type": "shell",
+      "command": "npm run watch",
+      "isBackground": true,
+      "problemMatcher": "$tsc-watch"
+    },
+    {
+      "label": "Command Center: Lint",
+      "type": "shell",
+      "command": "npm run lint",
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "Command Center: Test",
+      "type": "shell",
+      "command": "npm run test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Command Center: Verify",
+      "type": "shell",
+      "command": "npm run verify",
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "Command Center: Package VSIX",
+      "type": "shell",
+      "command": "npm run package:vsix",
+      "dependsOn": [
+        "Command Center: Compile"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Command Center: Install VSIX",
+      "type": "shell",
+      "command": "code --install-extension .\\phoenix-vscode-command-center-0.1.0.vsix --force",
+      "dependsOn": [
+        "Command Center: Package VSIX"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

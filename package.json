@@ -1,0 +1,131 @@
+{
+  "name": "phoenix-vscode-command-center",
+  "displayName": "Phoenix Command Center",
+  "description": "Board and Actions command center for Phoenix workflows.",
+  "version": "0.1.0",
+  "publisher": "rivie13",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rivie13/Phoenix-Agentic-VSCode-CommandCenter"
+  },
+  "engines": {
+    "vscode": "^1.109.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:phoenixOps.commandCenter",
+    "onCommand:phoenixOps.refresh",
+    "onCommand:phoenixOps.createIssue",
+    "onCommand:phoenixOps.updateProjectField",
+    "onCommand:phoenixOps.updateLabels",
+    "onCommand:phoenixOps.openIssueInBrowser",
+    "onCommand:phoenixOps.openRunInBrowser"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "phoenixOps",
+          "title": "Phoenix Ops",
+          "icon": "media/phoenix.svg"
+        }
+      ]
+    },
+    "views": {
+      "phoenixOps": [
+        {
+          "id": "phoenixOps.commandCenter",
+          "name": "Command Center",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "phoenixOps.refresh",
+        "title": "Phoenix Ops: Refresh"
+      },
+      {
+        "command": "phoenixOps.createIssue",
+        "title": "Phoenix Ops: Create Issue"
+      },
+      {
+        "command": "phoenixOps.updateProjectField",
+        "title": "Phoenix Ops: Update Project Field"
+      },
+      {
+        "command": "phoenixOps.updateLabels",
+        "title": "Phoenix Ops: Update Labels"
+      },
+      {
+        "command": "phoenixOps.openIssueInBrowser",
+        "title": "Phoenix Ops: Open Issue in Browser"
+      },
+      {
+        "command": "phoenixOps.openRunInBrowser",
+        "title": "Phoenix Ops: Open Run in Browser"
+      }
+    ],
+    "configuration": {
+      "title": "Phoenix Ops",
+      "properties": {
+        "phoenixOps.projectOwner": {
+          "type": "string",
+          "default": "rivie13",
+          "description": "Project owner login for GitHub Projects v2 queries."
+        },
+        "phoenixOps.projectNumber": {
+          "type": "number",
+          "default": 3,
+          "description": "Project number for the shared board."
+        },
+        "phoenixOps.supervisorBaseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8787",
+          "description": "Local supervisor service base URL for snapshot and SSE endpoints."
+        },
+        "phoenixOps.useSupervisorStream": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the supervisor SSE stream when available."
+        },
+        "phoenixOps.refreshSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 10,
+          "description": "Polling interval used for fallback refreshes."
+        },
+        "phoenixOps.repositories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Optional explicit repository slugs (owner/name). If empty, Phoenix repos are discovered from workspace folders."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "tsc -p ./ --noEmit",
+    "test": "vitest run",
+    "verify": "npm run lint && npm run test && npm run compile",
+    "package:vsix": "npx @vscode/vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "eventsource": "^3.0.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.10",
+    "@types/vscode": "^1.109.0",
+    "@vscode/vsce": "^3.6.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.0.18"
+  }
+}
