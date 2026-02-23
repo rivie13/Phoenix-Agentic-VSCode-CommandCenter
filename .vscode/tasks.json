@@ -39,6 +39,30 @@
       "problemMatcher": "$tsc"
     },
     {
+      "label": "Command Center: GitHub OAuth Sign-In",
+      "type": "shell",
+      "command": "gh auth login --hostname github.com --web --git-protocol https --scopes \"repo,project,workflow,admin:repo_hook\"",
+      "problemMatcher": []
+    },
+    {
+      "label": "Command Center: GitHub Auth Status",
+      "type": "shell",
+      "command": "gh auth status",
+      "problemMatcher": []
+    },
+    {
+      "label": "Command Center: Codex CLI Sign-In",
+      "type": "shell",
+      "command": "${input:codexAuthCommand}",
+      "problemMatcher": []
+    },
+    {
+      "label": "Command Center: Copilot CLI Sign-In",
+      "type": "shell",
+      "command": "${input:copilotAuthCommand}",
+      "problemMatcher": []
+    },
+    {
       "label": "Command Center: Package VSIX",
       "type": "shell",
       "command": "npm run package:vsix",
@@ -55,6 +79,20 @@
         "Command Center: Package VSIX"
       ],
       "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "codexAuthCommand",
+      "type": "promptString",
+      "description": "Command to sign in to Codex CLI",
+      "default": "codex login"
+    },
+    {
+      "id": "copilotAuthCommand",
+      "type": "promptString",
+      "description": "Command to sign in to Copilot CLI",
+      "default": "copilot login"
     }
   ]
 }

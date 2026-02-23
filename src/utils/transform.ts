@@ -1,4 +1,13 @@
-﻿import { ActionRun, BoardItem, DashboardSnapshot, StreamEnvelope } from "../types";
+import {
+  ActionRun,
+  AgentFeedEntry,
+  AgentPendingCommand,
+  AgentSession,
+  BoardItem,
+  DashboardSnapshot,
+  PullRequestSummary,
+  StreamEnvelope
+} from "../types";
 
 function readAny(raw: Record<string, unknown>, ...keys: string[]): unknown {
   for (const key of keys) {
@@ -107,12 +116,42 @@ export function bucketRuns(runs: ActionRun[]): {
   };
 }
 
+function sanitizeSnapshotActions(snapshot: DashboardSnapshot): DashboardSnapshot {
+  const actions = snapshot.actions ?? { runs: [], jobs: [], pullRequests: [] };
+  return {
+    ...snapshot,
+    actions: {
+      runs: Array.isArray(actions.runs) ? [...actions.runs] : [],
+      jobs: Array.isArray(actions.jobs) ? [...actions.jobs] : [],
+      pullRequests: Array.isArray(actions.pullRequests) ? [...actions.pullRequests] : []
+    }
+  };
+}
+
+function sanitizeSnapshotAgents(snapshot: DashboardSnapshot): DashboardSnapshot {
+  const agents = snapshot.agents ?? { sessions: [], feed: [], pendingCommands: [] };
+  return {
+    ...snapshot,
+    agents: {
+      sessions: Array.isArray(agents.sessions) ? [...agents.sessions] : [],
+      feed: Array.isArray(agents.feed) ? [...agents.feed] : [],
+      pendingCommands: Array.isArray(agents.pendingCommands) ? [...agents.pendingCommands] : []
+    }
+  };
+}
+
 export function applyStreamEnvelope(snapshot: DashboardSnapshot, envelope: StreamEnvelope): DashboardSnapshot {
   const next: DashboardSnapshot = {
     board: { items: [...snapshot.board.items] },
     actions: {
       runs: [...snapshot.actions.runs],
-      jobs: [...snapshot.actions.jobs]
+      jobs: [...snapshot.actions.jobs],
+      pullRequests: [...snapshot.actions.pullRequests]
+    },
+    agents: {
+      sessions: [...snapshot.agents.sessions],
+      feed: [...snapshot.agents.feed],
+      pendingCommands: [...snapshot.agents.pendingCommands]
     },
     meta: {
       ...snapshot.meta,
@@ -125,7 +164,7 @@ export function applyStreamEnvelope(snapshot: DashboardSnapshot, envelope: Strea
   };
 
   if (envelope.eventType === "snapshot") {
-    const payload = envelope.payload as DashboardSnapshot;
+    const payload = sanitizeSnapshotAgents(sanitizeSnapshotActions(envelope.payload as DashboardSnapshot));
     return {
       ...payload,
       meta: {
@@ -170,6 +209,44 @@ export function applyStreamEnvelope(snapshot: DashboardSnapshot, envelope: Strea
       next.actions.jobs[index] = job;
     } else {
       next.actions.jobs.push(job);
+    }
+  }
+
+  if (envelope.eventType === "actions.pull_request.upserted") {
+    const pullRequest = envelope.payload as PullRequestSummary;
+    const index = next.actions.pullRequests.findIndex((candidate) => candidate.id === pullRequest.id);
+    if (index >= 0) {
+      next.actions.pullRequests[index] = pullRequest;
+    } else {
+      next.actions.pullRequests.push(pullRequest);
+    }
+  }
+
+  if (envelope.eventType === "agents.session.upserted") {
+    const session = envelope.payload as AgentSession;
+    const index = next.agents.sessions.findIndex((candidate) => candidate.sessionId === session.sessionId);
+    if (index >= 0) {
+      next.agents.sessions[index] = session;
+    } else {
+      next.agents.sessions.push(session);
+    }
+  }
+
+  if (envelope.eventType === "agents.feed.appended") {
+    const entry = envelope.payload as AgentFeedEntry;
+    next.agents.feed.push(entry);
+    if (next.agents.feed.length > 200) {
+      next.agents.feed = next.agents.feed.slice(next.agents.feed.length - 200);
+    }
+  }
+
+  if (envelope.eventType === "agents.command.upserted") {
+    const command = envelope.payload as AgentPendingCommand;
+    const index = next.agents.pendingCommands.findIndex((candidate) => candidate.commandId === command.commandId);
+    if (index >= 0) {
+      next.agents.pendingCommands[index] = command;
+    } else {
+      next.agents.pendingCommands.push(command);
     }
   }
 

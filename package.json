@@ -17,21 +17,46 @@
   ],
   "activationEvents": [
     "onView:phoenixOps.commandCenter",
+    "onView:phoenixOps.agentWorkspace",
     "onCommand:phoenixOps.refresh",
+    "onCommand:phoenixOps.signIn",
+    "onCommand:phoenixOps.signInCodexCli",
+    "onCommand:phoenixOps.signInCopilotCli",
+    "onCommand:phoenixOps.pollinationsSignIn",
+    "onCommand:phoenixOps.pollinationsSetApiKey",
+    "onCommand:phoenixOps.configureSupervisorMode",
+    "onCommand:phoenixOps.configureJarvisVoice",
+    "onCommand:phoenixOps.configureModelHub",
     "onCommand:phoenixOps.createIssue",
+    "onCommand:phoenixOps.createPullRequest",
+    "onCommand:phoenixOps.mergePullRequest",
+    "onCommand:phoenixOps.commentPullRequest",
     "onCommand:phoenixOps.updateProjectField",
     "onCommand:phoenixOps.updateLabels",
     "onCommand:phoenixOps.openIssueInBrowser",
-    "onCommand:phoenixOps.openRunInBrowser"
+    "onCommand:phoenixOps.openRunInBrowser",
+    "onCommand:phoenixOps.openPullRequestInBrowser",
+    "onCommand:phoenixOps.openAgentWorkspace",
+    "onCommand:phoenixOps.openSessionInEditor",
+    "onCommand:phoenixOps.jarvisActivate",
+    "onCommand:phoenixOps.jarvisToggleManualMode"
   ],
   "main": "./out/extension.js",
+  "icon": "media/phoenix-app-icon-mono.png",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
           "id": "phoenixOps",
           "title": "Phoenix Ops",
-          "icon": "media/phoenix.svg"
+          "icon": "media/phoenix-app-icon-mono.svg"
+        }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "phoenixOpsAgent",
+          "title": "Phoenix Ops Agent",
+          "icon": "media/phoenix-app-icon-mono.svg"
         }
       ]
     },
@@ -42,6 +67,13 @@
           "name": "Command Center",
           "type": "webview"
         }
+      ],
+      "phoenixOpsAgent": [
+        {
+          "id": "phoenixOps.agentWorkspace",
+          "name": "Agent Workspace",
+          "type": "webview"
+        }
       ]
     },
     "commands": [
@@ -50,8 +82,52 @@
         "title": "Phoenix Ops: Refresh"
       },
       {
+        "command": "phoenixOps.signIn",
+        "title": "Phoenix Ops: Sign In to GitHub"
+      },
+      {
+        "command": "phoenixOps.signInCodexCli",
+        "title": "Phoenix Ops: Sign In to Codex CLI"
+      },
+      {
+        "command": "phoenixOps.signInCopilotCli",
+        "title": "Phoenix Ops: Sign In to Copilot CLI"
+      },
+      {
+        "command": "phoenixOps.pollinationsSignIn",
+        "title": "Phoenix Ops: Pollinations Sign Up / Sign In"
+      },
+      {
+        "command": "phoenixOps.pollinationsSetApiKey",
+        "title": "Phoenix Ops: Set Pollinations API Key"
+      },
+      {
+        "command": "phoenixOps.configureSupervisorMode",
+        "title": "Phoenix Ops: Configure Supervisor Mode"
+      },
+      {
+        "command": "phoenixOps.configureJarvisVoice",
+        "title": "Phoenix Ops: Configure Jarvis Voice Settings"
+      },
+      {
+        "command": "phoenixOps.configureModelHub",
+        "title": "Phoenix Ops: Configure Agent Model Hub"
+      },
+      {
         "command": "phoenixOps.createIssue",
         "title": "Phoenix Ops: Create Issue"
+      },
+      {
+        "command": "phoenixOps.createPullRequest",
+        "title": "Phoenix Ops: Create Pull Request"
+      },
+      {
+        "command": "phoenixOps.mergePullRequest",
+        "title": "Phoenix Ops: Merge Pull Request"
+      },
+      {
+        "command": "phoenixOps.commentPullRequest",
+        "title": "Phoenix Ops: Comment on Pull Request"
       },
       {
         "command": "phoenixOps.updateProjectField",
@@ -68,6 +144,40 @@
       {
         "command": "phoenixOps.openRunInBrowser",
         "title": "Phoenix Ops: Open Run in Browser"
+      },
+      {
+        "command": "phoenixOps.openPullRequestInBrowser",
+        "title": "Phoenix Ops: Open Pull Request in Browser"
+      },
+      {
+        "command": "phoenixOps.openAgentWorkspace",
+        "title": "Phoenix Ops: Open Right Agent Panel"
+      },
+      {
+        "command": "phoenixOps.openSessionInEditor",
+        "title": "Phoenix Ops: Open Session in Editor"
+      },
+      {
+        "command": "phoenixOps.jarvisActivate",
+        "title": "Phoenix Ops: Ask Jarvis"
+      },
+      {
+        "command": "phoenixOps.jarvisToggleManualMode",
+        "title": "Phoenix Ops: Toggle Jarvis Manual Mode"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "phoenixOps.jarvisActivate",
+        "key": "ctrl+alt+j",
+        "mac": "cmd+alt+j",
+        "when": "!inputFocus"
+      },
+      {
+        "command": "phoenixOps.jarvisToggleManualMode",
+        "key": "ctrl+alt+m",
+        "mac": "cmd+alt+m",
+        "when": "!inputFocus"
       }
     ],
     "configuration": {
@@ -88,10 +198,59 @@
           "default": "http://127.0.0.1:8787",
           "description": "Local supervisor service base URL for snapshot and SSE endpoints."
         },
+        "phoenixOps.supervisorAuthToken": {
+          "type": "string",
+          "default": "",
+          "description": "Optional bearer token for authenticated supervisor deployments."
+        },
+        "phoenixOps.workspaceSupervisorAutoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the Workspace Supervisor repo server when supervisorBaseUrl points to localhost and the server is down."
+        },
+        "phoenixOps.workspaceSupervisorRepoPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute or workspace-relative path to Phoenix-Agentic-Workspace-Supervisor. Leave empty for auto-discovery."
+        },
+        "phoenixOps.workspaceSupervisorStartTimeoutMs": {
+          "type": "number",
+          "default": 45000,
+          "minimum": 5000,
+          "maximum": 120000,
+          "description": "How long to wait for workspace supervisor startup health checks."
+        },
+        "phoenixOps.embeddedSupervisorEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run the bundled embedded supervisor sidecar. Keep disabled to use the Workspace Supervisor repo as primary control plane."
+        },
+        "phoenixOps.embeddedSupervisorHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host interface for the bundled embedded supervisor."
+        },
+        "phoenixOps.embeddedSupervisorPort": {
+          "type": "number",
+          "default": 8789,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port for the bundled embedded supervisor sidecar."
+        },
+        "phoenixOps.embeddedSupervisorApiToken": {
+          "type": "string",
+          "default": "",
+          "description": "Optional bearer token used between extension and embedded supervisor."
+        },
         "phoenixOps.useSupervisorStream": {
           "type": "boolean",
           "default": true,
           "description": "Use the supervisor SSE stream when available."
+        },
+        "phoenixOps.allowDirectGhPollingFallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow direct gh polling when supervisor stream/snapshot is unavailable. Keep disabled to route reads through supervisor only."
         },
         "phoenixOps.refreshSeconds": {
           "type": "number",
@@ -99,13 +258,181 @@
           "minimum": 10,
           "description": "Polling interval used for fallback refreshes."
         },
+        "phoenixOps.boardCacheSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 15,
+          "description": "Board cache lifetime in seconds. Higher values reduce GitHub API usage."
+        },
+        "phoenixOps.actionsCacheSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 15,
+          "description": "Actions cache lifetime in seconds. Higher values reduce GitHub API usage."
+        },
+        "phoenixOps.pullRequestCacheSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 15,
+          "description": "Pull request cache lifetime in seconds. Higher values reduce GitHub API usage."
+        },
+        "phoenixOps.rateLimitCooldownSeconds": {
+          "type": "number",
+          "default": 300,
+          "minimum": 30,
+          "description": "Cooldown duration after GitHub rate-limit detection before retrying live GH calls."
+        },
         "phoenixOps.repositories": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [],
-          "description": "Optional explicit repository slugs (owner/name). If empty, Phoenix repos are discovered from workspace folders."
+          "description": "Optional explicit repository slugs (owner/name). If empty, repositories are discovered by mode."
+        },
+        "phoenixOps.repositoryDiscoveryMode": {
+          "type": "string",
+          "enum": [
+            "phoenixWorkspace",
+            "workspaceGitRemotes"
+          ],
+          "default": "phoenixWorkspace",
+          "description": "Repository auto-discovery mode when phoenixOps.repositories is empty."
+        },
+        "phoenixOps.codexCliAuthCommand": {
+          "type": "string",
+          "default": "auto",
+          "description": "Terminal command used by 'Phoenix Ops: Sign In to Codex CLI'. Set to 'auto' to prefer `codex login` with fallback."
+        },
+        "phoenixOps.copilotCliAuthCommand": {
+          "type": "string",
+          "default": "auto",
+          "description": "Terminal command used by 'Phoenix Ops: Sign In to Copilot CLI'. Set to 'auto' to prefer `copilot login` with fallback."
+        },
+        "phoenixOps.codexModelOptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "gpt-5.3-codex",
+            "gpt-5-codex"
+          ],
+          "description": "Fallback Codex model IDs for composer model selection when no model hub is configured/reachable."
+        },
+        "phoenixOps.copilotModelOptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "gpt-4.1",
+            "claude-sonnet"
+          ],
+          "description": "Fallback Copilot model IDs for composer model selection when no model hub is configured/reachable."
+        },
+        "phoenixOps.agentModelCatalogUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional HTTP(S) endpoint for live composer model catalogs. Supports payloads shaped like {services:{codex:[...],copilot:[...]}}."
+        },
+        "phoenixOps.agentModelCatalogAuthToken": {
+          "type": "string",
+          "default": "",
+          "description": "Optional bearer token used when requesting phoenixOps.agentModelCatalogUrl."
+        },
+        "phoenixOps.mcpToolOptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "qa_enqueue_handoff",
+            "qa_get_handoff",
+            "qa_list_handoffs",
+            "qa_submit_decision"
+          ],
+          "description": "MCP tool IDs exposed in the composer selector. Extension also adds configured MCP server names as server:<name>."
+        },
+        "phoenixOps.jarvisEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Jarvis voice assistant features in Command Center."
+        },
+        "phoenixOps.jarvisAutoAnnouncements": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow scheduled Jarvis automatic callouts based on supervisor state."
+        },
+        "phoenixOps.jarvisApiBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Pollinations OpenAI-compatible base URL for Jarvis. Leave empty to auto-select based on API key."
+        },
+        "phoenixOps.jarvisApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Pollinations API key used for Jarvis text and voice generation."
+        },
+        "phoenixOps.jarvisTextModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional model name for Jarvis text completions. Leave empty to auto-select based on API key."
+        },
+        "phoenixOps.jarvisSpeechModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional OpenAI speech model for Jarvis synthesis. Leave empty to auto-select based on API key."
+        },
+        "phoenixOps.jarvisVoice": {
+          "type": "string",
+          "default": "alloy",
+          "description": "Voice ID passed to Pollinations speech API."
+        },
+        "phoenixOps.jarvisMaxAnnouncementsPerHour": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum automatic Jarvis callouts per rolling hour."
+        },
+        "phoenixOps.jarvisMinSecondsBetweenAnnouncements": {
+          "type": "number",
+          "default": 180,
+          "minimum": 30,
+          "description": "Minimum seconds between automatic Jarvis callouts."
+        },
+        "phoenixOps.jarvisReasonCooldownMinutes": {
+          "type": "number",
+          "default": 20,
+          "minimum": 5,
+          "description": "Cooldown per auto-callout reason before Jarvis repeats the same type."
+        },
+        "phoenixOps.jarvisPollinationsHardCooldownSeconds": {
+          "type": "number",
+          "default": 900,
+          "minimum": 30,
+          "maximum": 1800,
+          "description": "Cooldown after Pollinations auth/quota/rate-limit/invalid-request failures."
+        },
+        "phoenixOps.jarvisPollinationsSoftCooldownSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 15,
+          "maximum": 1800,
+          "description": "Cooldown after Pollinations timeout/network/server/unknown failures."
+        },
+        "phoenixOps.jarvisOfferJokes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow occasional joke offers when the workspace looks healthy."
+        },
+        "phoenixOps.jarvisConversationHistoryTurns": {
+          "type": "number",
+          "default": 8,
+          "minimum": 2,
+          "maximum": 24,
+          "description": "Conversation turns retained for Jarvis context."
         }
       }
     }
@@ -116,10 +443,7 @@
     "lint": "tsc -p ./ --noEmit",
     "test": "vitest run",
     "verify": "npm run lint && npm run test && npm run compile",
-    "package:vsix": "npx @vscode/vsce package --no-dependencies"
-  },
-  "dependencies": {
-    "eventsource": "^3.0.7"
+    "package:vsix": "npx @vscode/vsce package"
   },
   "devDependencies": {
     "@types/node": "^22.10.10",

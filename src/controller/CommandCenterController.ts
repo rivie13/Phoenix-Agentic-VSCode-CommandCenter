@@ -1,0 +1,1808 @@
+import * as vscode from "vscode";
+import type {
+  ActionRunLogRequestPayload,
+  AgentCommandDecisionPayload,
+  AgentDispatchPayload,
+  AgentMessagePayload,
+  AgentStopPayload,
+  CommentPullRequestFromViewPayload,
+  CreateIssueFromViewPayload,
+  CreatePullRequestFromViewPayload,
+  IssueActionPayload,
+  IssueCreateMetadataRequestPayload,
+  JarvisFocusHint,
+  JarvisSpeakPayload,
+  JarvisStatePayload,
+  PullRequestInsightsRequestPayload,
+  PullRequestOpenPayload,
+  RetryActionRunPayload
+} from "./CommandCenterPayloads";
+import type { PendingBoardUiAction } from "./issuePullRequestHandlers";
+import {
+  commentPullRequestFromView as commentPullRequestFromViewHandler,
+  createIssueFromView as createIssueFromViewHandler,
+  createPullRequestFromView as createPullRequestFromViewHandler,
+  issueCreateMetadataRequest as issueCreateMetadataRequestHandler,
+  openCommandCenterForTabAction as openCommandCenterForTabActionHandler,
+  postRuntimeContext as postRuntimeContextHandler
+} from "./issuePullRequestHandlers";
+import {
+  findBoardItemById,
+  pickBoardItem,
+  pickPullRequest,
+  pickRun
+} from "./snapshotPickers";
+import { routeWebviewMessage } from "./webviewMessageRouter";
+import {
+  addActiveFileContext as addActiveFileContextHandler,
+  addSelectionContext as addSelectionContextHandler,
+  addWorkspaceFileContext as addWorkspaceFileContextHandler,
+  dispatchAgent as dispatchAgentHandler,
+  openPullRequestByNumber as openPullRequestByNumberHandler,
+  openSessionInEditor as openSessionInEditorHandler,
+  postSupervisorJson as postSupervisorJsonHandler,
+  resolveCurrentWorkspaceContext as resolveCurrentWorkspaceContextHandler,
+  resolvePendingCommand as resolvePendingCommandHandler,
+  sendAgentMessage as sendAgentMessageHandler,
+  stopAgent as stopAgentHandler
+} from "./agentRuntimeHandlers";
+import {
+  invalidateAgentModelCatalogCache as invalidateAgentModelCatalogCacheHandler,
+  resolveAgentModelCatalog as resolveAgentModelCatalogHandler
+} from "./agentModelCatalogHandlers";
+import {
+  ensureEmbeddedSupervisorStarted as ensureEmbeddedSupervisorStartedHandler,
+  syncEmbeddedSupervisorNow as syncEmbeddedSupervisorNowHandler
+} from "./embeddedSupervisorHandlers";
+import {
+  pickAgentModelHubConfig,
+  pickSupervisorModeConfig
+} from "./configurationPrompts";
+import {
+  activateJarvis as activateJarvisHandler,
+  tickJarvisAuto as tickJarvisAutoHandler
+} from "./jarvisInteractionHandlers";
+import { tryJarvisDelegatedApproval as tryJarvisDelegatedApprovalHandler } from "./jarvisDelegatedApprovalHandler";
+import {
+  forwardJarvisSpeakToSupervisor as forwardJarvisSpeakToSupervisorHandler,
+  requestJarvisRespondFromSupervisor as requestJarvisRespondFromSupervisorHandler
+} from "./jarvisSupervisorHandlers";
+import {
+  resolveConfigTargetForKey,
+  runAuthCommandFromSetting,
+  updatePhoenixSettings
+} from "./settingsAuthHandlers";
+import {
+  refreshFromSupervisor as refreshFromSupervisorHandler,
+  startDataFlow as startDataFlowHandler,
+  tryStartSupervisorStream as tryStartSupervisorStreamHandler
+} from "./supervisorFlowHandlers";
+import { CommandCenterViewProvider } from "../providers/CommandCenterViewProvider";
+import { DataService, RefreshReason } from "../services/DataService";
+import { EmbeddedSupervisorManager } from "../services/EmbeddedSupervisorManager";
+import { GhClient } from "../services/GhClient";
+import { JarvisConversationTurn, JarvisService, JarvisSpeechResult } from "../services/JarvisService";
+import { JarvisHostAudioPlayer } from "../services/JarvisHostAudioPlayer";
+import { WorkspaceSupervisorManager } from "../services/WorkspaceSupervisorManager";
+import {
+  PollinationsCooldownTracker,
+  PollinationsFailureKind,
+  normalizePollinationsFailure
+} from "../services/PollinationsResilience";
+import { SupervisorStreamClient } from "../services/SupervisorStreamClient";
+import {
+  ActionRun,
+  BoardItem,
+  DashboardSnapshot,
+  PullRequestSummary,
+  ProjectFieldName,
+  StreamEnvelope
+} from "../types";
+import type { AgentModelCatalogPayload } from "../utils/agentModelCatalog";
+import { applyStreamEnvelope } from "../utils/transform";
+
+const PROJECT_FIELD_NAMES: ProjectFieldName[] = ["Status", "Work mode", "Priority", "Size", "Area"];
+const REQUIRED_GH_SCOPES = ["repo", "project", "workflow", "admin:repo_hook"];
+const PINNED_SESSION_STORAGE_KEY = "phoenixOps.pinnedSessions";
+const ARCHIVED_SESSION_STORAGE_KEY = "phoenixOps.archivedSessions";
+const JARVIS_MANUAL_MODE_STORAGE_KEY = "phoenixOps.jarvisManualMode";
+const JARVIS_AUTO_LOOP_MS = 30_000;
+
+export class CommandCenterController implements vscode.Disposable {
+  private readonly boardViewProvider: CommandCenterViewProvider;
+  private readonly agentViewProvider: CommandCenterViewProvider;
+  private readonly dataService: DataService;
+  private readonly workspaceSupervisorManager: WorkspaceSupervisorManager;
+  private readonly embeddedSupervisorManager: EmbeddedSupervisorManager;
+  private readonly jarvisService: JarvisService;
+  private readonly streamClient: SupervisorStreamClient;
+  private readonly jarvisHostAudioPlayer: JarvisHostAudioPlayer;
+  private readonly context: vscode.ExtensionContext;
+  private readonly output: vscode.OutputChannel;
+
+  private snapshot: DashboardSnapshot | null = null;
+  private sequence = 0;
+  private pollingTimer: NodeJS.Timeout | null = null;
+  private staleTimer: NodeJS.Timeout | null = null;
+  private lastUpdatedMs = 0;
+  private streamConnected = false;
+  private ghAuthOk = false;
+  private disposed = false;
+  private jarvisManualMode = false;
+  private jarvisAutoTimer: NodeJS.Timeout | null = null;
+  private readonly jarvisAnnouncementMsHistory: number[] = [];
+  private jarvisLastAnnouncementMs = 0;
+  private readonly jarvisReasonCooldownMs = new Map<string, number>();
+  private jarvisLastMessage: string | null = null;
+  private jarvisLastReason: string | null = null;
+  private readonly jarvisConversation: JarvisConversationTurn[] = [];
+  private readonly jarvisPollinationsCooldown = new PollinationsCooldownTracker();
+  private embeddedSupervisorBaseUrl: string | null = null;
+  private embeddedSupervisorToken = "";
+  private embeddedSupervisorSyncTimer: NodeJS.Timeout | null = null;
+  private cachedAgentModelCatalog: AgentModelCatalogPayload | null = null;
+  private cachedAgentModelCatalogExpiresAtMs = 0;
+  private agentModelCatalogWarnedUntilMs = 0;
+  private pinnedSessionIds = new Set<string>();
+  private archivedSessionIds = new Set<string>();
+  private readonly sessionPanels = new Map<string, vscode.WebviewPanel>();
+  private pendingBoardUiAction: PendingBoardUiAction | null = null;
+
+  constructor(
+    boardViewProvider: CommandCenterViewProvider,
+    agentViewProvider: CommandCenterViewProvider,
+    dataService: DataService,
+    context: vscode.ExtensionContext
+  ) {
+    this.boardViewProvider = boardViewProvider;
+    this.agentViewProvider = agentViewProvider;
+    this.dataService = dataService;
+    this.workspaceSupervisorManager = new WorkspaceSupervisorManager();
+    this.embeddedSupervisorManager = new EmbeddedSupervisorManager(context);
+    this.jarvisService = new JarvisService();
+    this.streamClient = new SupervisorStreamClient();
+    this.context = context;
+    this.output = vscode.window.createOutputChannel("Phoenix Ops Command Center");
+    this.jarvisHostAudioPlayer = new JarvisHostAudioPlayer({
+      info: (message: string) => this.logInfo(message),
+      warn: (message: string) => this.logWarn(message)
+    });
+  }
+
+  async initialize(): Promise<void> {
+    this.logInfo("Initializing Phoenix Ops Command Center.");
+    this.loadSessionPreferences();
+    this.jarvisManualMode = this.context.globalState.get<boolean>(JARVIS_MANUAL_MODE_STORAGE_KEY, false);
+    await this.ensureWorkspaceSupervisorStarted();
+    await this.ensureEmbeddedSupervisorStarted();
+
+    const auth = await this.dataService.checkGhAuth();
+    this.ghAuthOk = auth.ok;
+    await this.postAuthState();
+    if (!auth.ok) {
+      const signInChoice = await vscode.window.showWarningMessage(
+        "Phoenix Command Center requires GitHub authentication for board/actions access.",
+        "Sign In"
+      );
+      if (signInChoice === "Sign In") {
+        await this.signInCommand();
+      }
+    }
+
+    this.boardViewProvider.onMessage(async ({ message, webview }) => {
+      await this.handleIncomingMessage(message, webview);
+    });
+
+    this.agentViewProvider.onMessage(async ({ message, webview }) => {
+      await this.handleIncomingMessage(message, webview);
+    });
+
+    await this.refreshNow("startup");
+    await this.startDataFlow();
+    if (this.embeddedSupervisorBaseUrl && this.getRuntimeSettings().useSupervisorStream) {
+      await this.syncEmbeddedSupervisorNow("startup");
+      this.startEmbeddedSupervisorSyncLoop();
+    }
+    this.startStaleMonitor();
+    this.startJarvisAutoLoop();
+    await this.openAgentWorkspacePanel();
+    await this.sendJarvisStartupGreeting();
+    this.logInfo("Initialization complete.");
+  }
+
+  async refreshCommand(): Promise<void> {
+    await this.refreshNow("manual");
+  }
+
+  async signInCommand(): Promise<void> {
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Phoenix Ops: Signing in to GitHub via gh OAuth..."
+        },
+        async () => {
+          await this.dataService.ensureGhAuth(REQUIRED_GH_SCOPES);
+        }
+      );
+
+      const auth = await this.dataService.checkGhAuth();
+      this.ghAuthOk = auth.ok;
+      await this.postAuthState();
+
+      if (!auth.ok) {
+        vscode.window.showErrorMessage(`GitHub sign-in did not complete. ${auth.output}`);
+        return;
+      }
+
+      vscode.window.showInformationMessage("GitHub sign-in complete. Refreshing data...");
+      await this.refreshNow("manual");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`GitHub sign-in failed: ${message}`);
+    }
+  }
+
+  async signInCodexCliCommand(): Promise<void> {
+    await runAuthCommandFromSetting(
+      "codexCliAuthCommand",
+      ["codex login", "codex auth login"],
+      "Codex CLI"
+    );
+  }
+
+  async signInCopilotCliCommand(): Promise<void> {
+    await runAuthCommandFromSetting(
+      "copilotCliAuthCommand",
+      ["copilot login", "gh auth login --web"],
+      "Copilot CLI"
+    );
+  }
+
+  async pollinationsSignInCommand(): Promise<void> {
+    await this.openUrl("https://auth.pollinations.ai/");
+  }
+
+  async pollinationsSetApiKeyCommand(): Promise<void> {
+    const config = vscode.workspace.getConfiguration("phoenixOps");
+    const current = config.get<string>("jarvisApiKey", "");
+    const entered = await vscode.window.showInputBox({
+      title: "Pollinations API Key",
+      prompt: "Paste your Pollinations API key. Leave blank and confirm to clear it.",
+      value: current,
+      password: true,
+      ignoreFocusOut: true
+    });
+    if (entered === undefined) {
+      return;
+    }
+
+    const trimmed = entered.trim();
+    if (!trimmed) {
+      const clearChoice = await vscode.window.showWarningMessage(
+        "Clear the saved Pollinations API key?",
+        { modal: true },
+        "Clear"
+      );
+      if (clearChoice !== "Clear") {
+        return;
+      }
+    }
+
+    const target = resolveConfigTargetForKey("jarvisApiKey");
+    await config.update("jarvisApiKey", trimmed, target);
+    vscode.window.showInformationMessage(trimmed ? "Pollinations API key updated." : "Pollinations API key cleared.");
+  }
+
+  async configureSupervisorModeCommand(): Promise<void> {
+    const selected = await pickSupervisorModeConfig(this.dataService.getSettings());
+    if (!selected) {
+      return;
+    }
+
+    await updatePhoenixSettings(selected.updates);
+    this.invalidateAgentModelCatalogCache();
+    await this.restartSupervisorDataFlow();
+    vscode.window.showInformationMessage(`Supervisor mode updated: ${selected.label}.`);
+  }
+
+  async configureJarvisVoiceCommand(): Promise<void> {
+    const settings = this.dataService.getSettings();
+    const enteredSpeechModel = await vscode.window.showInputBox({
+      title: "Jarvis Speech Model",
+      prompt: "Model ID for Pollinations /v1/audio/speech (for example: openai-audio, tts-1). Leave empty to auto-select.",
+      value: settings.jarvisSpeechModel,
+      ignoreFocusOut: true
+    });
+    if (enteredSpeechModel === undefined) {
+      return;
+    }
+    const enteredVoice = await vscode.window.showInputBox({
+      title: "Jarvis Voice ID",
+      prompt: "Voice ID sent to Pollinations speech API (for example: alloy).",
+      value: settings.jarvisVoice,
+      ignoreFocusOut: true
+    });
+    if (enteredVoice === undefined) {
+      return;
+    }
+
+    const speechModel = enteredSpeechModel.trim();
+    const voice = enteredVoice.trim();
+    await updatePhoenixSettings([
+      ["jarvisSpeechModel", speechModel],
+      ["jarvisVoice", voice || "alloy"]
+    ]);
+    this.invalidateAgentModelCatalogCache();
+    await this.postJarvisState();
+    await this.postRuntimeContext();
+    vscode.window.showInformationMessage("Jarvis voice settings updated.");
+  }
+
+  async configureAgentModelHubCommand(): Promise<void> {
+    const selection = await pickAgentModelHubConfig(this.dataService.getSettings());
+    if (!selection) {
+      return;
+    }
+
+    await updatePhoenixSettings(selection.updates);
+    this.invalidateAgentModelCatalogCache();
+    await this.postRuntimeContext();
+    vscode.window.showInformationMessage(selection.statusMessage);
+  }
+
+  async createIssueCommand(): Promise<void> {
+    const workspaceContext = await resolveCurrentWorkspaceContextHandler();
+    await this.openCommandCenterForTabAction({
+      tab: "issues",
+      openIssueCreate: true,
+      preferredRepo: workspaceContext?.repoSlug ?? null
+    });
+  }
+
+  private snapshotPickerContext(): {
+    getSnapshot: () => DashboardSnapshot | null;
+    refresh: () => Promise<void>;
+  } {
+    return {
+      getSnapshot: () => this.snapshot,
+      refresh: async () => this.refreshNow("manual")
+    };
+  }
+
+  private issuePullRequestHandlersDeps() {
+    return {
+      dataService: this.dataService,
+      boardViewProvider: this.boardViewProvider,
+      getSnapshot: () => this.snapshot,
+      setPendingBoardUiAction: (value: PendingBoardUiAction | null) => {
+        this.pendingBoardUiAction = value;
+      },
+      getRuntimeSettings: () => this.getRuntimeSettings(),
+      resolveCurrentWorkspaceContext: async () => resolveCurrentWorkspaceContextHandler(),
+      resolveAvailableMcpToolIds: () => this.resolveAvailableMcpToolIds(),
+      resolveAgentModelCatalog: async (settings: ReturnType<DataService["getSettings"]>) => this.resolveAgentModelCatalog(settings),
+      refreshNow: async (reason: RefreshReason) => this.refreshNow(reason),
+      sleep: async (ms: number) => this.sleep(ms),
+      postWebviewResponse: async (sourceWebview: vscode.Webview | undefined, type: string, payload: unknown) =>
+        this.postWebviewResponse(sourceWebview, type, payload)
+    };
+  }
+
+  private agentRuntimeHandlersDeps() {
+    return {
+      dataService: this.dataService,
+      getRuntimeSettings: () => this.getRuntimeSettings(),
+      getSnapshot: () => this.snapshot,
+      refreshNow: async (reason: RefreshReason) => this.refreshNow(reason),
+      openSessionPanel: async (sessionId: string) => this.openSessionPanel(sessionId),
+      openUrl: async (url: string) => this.openUrl(url),
+      postContextResponse: async (
+        sourceWebview: vscode.Webview | undefined,
+        type: "contextAdded" | "contextError",
+        payload: unknown
+      ) => this.postContextResponse(sourceWebview, type, payload)
+    };
+  }
+
+  private jarvisSupervisorHandlersDeps() {
+    return {
+      getDataSettings: () => this.dataService.getSettings(),
+      getRuntimeSettings: () => this.getRuntimeSettings(),
+      configuredSupervisorConnection: () => this.configuredSupervisorConnection(),
+      isLocalSupervisorBaseUrl: (baseUrl: string) => this.isLocalSupervisorBaseUrl(baseUrl),
+      ensureWorkspaceSupervisorStarted: async () => this.ensureWorkspaceSupervisorStarted(),
+      waitForSupervisorSnapshotReady: async (baseUrl: string, authToken: string, timeoutMs: number) =>
+        this.waitForSupervisorSnapshotReady(baseUrl, authToken, timeoutMs),
+      sleep: async (ms: number) => this.sleep(ms),
+      postStatus: async (message: string, level: "ok" | "warn" | "err") => this.postStatus(message, level),
+      logInfo: (message: string) => this.logInfo(message),
+      logWarn: (message: string) => this.logWarn(message),
+      emitJarvisPayload: async (payload: JarvisSpeakPayload, forwardToSupervisor: boolean) =>
+        this.emitJarvisPayload(payload, forwardToSupervisor),
+      clearPollinationsCooldown: (channel: "chat" | "speech") => this.clearPollinationsCooldown(channel),
+      rememberJarvisTurn: (role: "user" | "assistant", content: string, maxTurns: number) =>
+        this.rememberJarvisTurn(role, content, maxTurns)
+    };
+  }
+
+  private agentModelCatalogHandlersDeps() {
+    return {
+      getCachedCatalog: () => this.cachedAgentModelCatalog,
+      getCachedCatalogExpiresAtMs: () => this.cachedAgentModelCatalogExpiresAtMs,
+      setCachedCatalog: (payload: AgentModelCatalogPayload | null, expiresAtMs: number) => {
+        this.cachedAgentModelCatalog = payload;
+        this.cachedAgentModelCatalogExpiresAtMs = expiresAtMs;
+      },
+      getWarnedUntilMs: () => this.agentModelCatalogWarnedUntilMs,
+      setWarnedUntilMs: (untilMs: number) => {
+        this.agentModelCatalogWarnedUntilMs = untilMs;
+      },
+      postStatus: async (message: string, level: "ok" | "warn" | "err") => this.postStatus(message, level)
+    };
+  }
+
+  private jarvisInteractionHandlersDeps() {
+    return {
+      getSnapshot: () => this.snapshot,
+      isDisposed: () => this.disposed,
+      getRuntimeSettings: () => this.getRuntimeSettings(),
+      isJarvisManualMode: () => this.jarvisManualMode,
+      getJarvisLastAnnouncementMs: () => this.jarvisLastAnnouncementMs,
+      canAnnounceJarvis: (reason: string, settings: ReturnType<DataService["getSettings"]>) =>
+        this.canAnnounceJarvis(reason, settings),
+      requestJarvisRespondFromSupervisor: async (input: {
+        prompt: string;
+        reason: string;
+        auto: boolean;
+        focusHint: JarvisFocusHint | null;
+        rememberPrompt: string | null;
+        warnOnFailure: boolean;
+      }) => this.requestJarvisRespondFromSupervisor(input),
+      getJarvisServiceSettings: (settings: ReturnType<DataService["getSettings"]>) => this.getJarvisServiceSettings(settings),
+      getJarvisConversation: () => this.jarvisConversation,
+      generateJarvisReply: async (
+        systemPrompt: string,
+        userPrompt: string,
+        conversation: JarvisConversationTurn[],
+        settings: { apiBaseUrl: string; apiKey: string; textModel: string; speechModel: string; voice: string }
+      ) => this.jarvisService.generateReply(systemPrompt, userPrompt, conversation, settings),
+      getPollinationsCooldownSnapshot: (channel: "chat" | "speech") => this.jarvisPollinationsCooldown.snapshot(channel),
+      pollinationsCooldownNotice: (channel: "chat" | "speech", failureKind: PollinationsFailureKind | null, untilMs: number) =>
+        this.pollinationsCooldownNotice(channel, failureKind, untilMs),
+      clearPollinationsCooldown: (channel: "chat" | "speech") => this.clearPollinationsCooldown(channel),
+      notePollinationsFailure: (
+        channel: "chat" | "speech",
+        error: unknown,
+        settings: ReturnType<DataService["getSettings"]>
+      ) => this.notePollinationsFailure(channel, error, settings),
+      rememberJarvisTurn: (role: "user" | "assistant", content: string, historyTurns: number) =>
+        this.rememberJarvisTurn(role, content, historyTurns),
+      emitJarvisSpeech: async (input: {
+        text: string;
+        reason: string;
+        auto: boolean;
+        focusHint: JarvisFocusHint | null;
+      }) => this.emitJarvisSpeech(input),
+      refreshNow: async (reason: RefreshReason) => this.refreshNow(reason),
+      tryJarvisDelegatedApproval: async (prompt: string, snapshot: DashboardSnapshot) =>
+        this.tryJarvisDelegatedApproval(prompt, snapshot),
+      showWarningMessage: (message: string) => {
+        vscode.window.showWarningMessage(message);
+      }
+    };
+  }
+
+  private jarvisDelegatedApprovalDeps() {
+    return {
+      postSupervisorDecision: async (commandId: string) => {
+        await postSupervisorJsonHandler(this.agentRuntimeHandlersDeps(), "/agents/command/decision", {
+          commandId,
+          approve: true,
+          note: "Approved by Jarvis delegation"
+        });
+      },
+      refreshNow: async (reason: RefreshReason) => this.refreshNow(reason)
+    };
+  }
+
+  private embeddedSupervisorHandlersDeps() {
+    return {
+      getSettings: () => this.dataService.getSettings(),
+      embeddedSupervisorManager: this.embeddedSupervisorManager,
+      getEmbeddedSupervisorBaseUrl: () => this.embeddedSupervisorBaseUrl,
+      setEmbeddedSupervisorBaseUrl: (value: string | null) => {
+        this.embeddedSupervisorBaseUrl = value;
+      },
+      getEmbeddedSupervisorToken: () => this.embeddedSupervisorToken,
+      setEmbeddedSupervisorToken: (value: string) => {
+        this.embeddedSupervisorToken = value;
+      },
+      postStatus: async (message: string, level: "ok" | "warn" | "err") => this.postStatus(message, level),
+      nextSequence: () => {
+        this.sequence += 1;
+        return this.sequence;
+      },
+      fetchLocalSnapshot: async (
+        sequence: number,
+        streamConnected: boolean,
+        forceRefresh: boolean,
+        reason: RefreshReason
+      ) => this.dataService.fetchLocalSnapshot(sequence, streamConnected, forceRefresh, reason)
+    };
+  }
+
+  private supervisorFlowHandlersDeps() {
+    return {
+      getRuntimeSettings: () => this.getRuntimeSettings(),
+      streamClient: this.streamClient,
+      fetchSnapshot: async (snapshotUrl: string, authToken: string) => this.fetchSnapshot(snapshotUrl, authToken),
+      acceptSnapshot: (snapshot: DashboardSnapshot) => this.acceptSnapshot(snapshot),
+      onStreamEnvelope: (envelope: StreamEnvelope) => this.onStreamEnvelope(envelope),
+      getStreamConnected: () => this.streamConnected,
+      setStreamConnected: (value: boolean) => {
+        this.streamConnected = value;
+      },
+      logInfo: (message: string) => this.logInfo(message),
+      logWarn: (message: string) => this.logWarn(message),
+      postStatus: async (message: string, level: "ok" | "warn" | "err") => this.postStatus(message, level),
+      startPolling: () => this.startPolling(),
+      stopPolling: () => this.stopPolling(),
+      sleep: async (ms: number) => this.sleep(ms)
+    };
+  }
+
+  private webviewMessageRouterContext() {
+    return {
+      getSnapshot: () => this.snapshot,
+      postAuthState: async () => this.postAuthState(),
+      postJarvisState: async (sourceWebview?: vscode.Webview) => this.postJarvisState(sourceWebview),
+      pushSnapshot: async () => this.pushSnapshot(),
+      refreshNow: async (reason: RefreshReason) => this.refreshNow(reason),
+      postRuntimeContext: async (sourceWebview?: vscode.Webview) => this.postRuntimeContext(sourceWebview),
+      getPendingBoardUiAction: () => this.pendingBoardUiAction,
+      clearPendingBoardUiAction: () => {
+        this.pendingBoardUiAction = null;
+      },
+      boardViewOwnsWebview: (webview?: vscode.Webview) => this.boardViewProvider.ownsWebview(webview),
+      postWebviewResponse: async (sourceWebview: vscode.Webview | undefined, type: string, payload: unknown) =>
+        this.postWebviewResponse(sourceWebview, type, payload),
+      activateJarvis: async (prompt: string) => this.activateJarvis(prompt),
+      jarvisToggleManualModeCommand: async () => this.jarvisToggleManualModeCommand(),
+      issueCreateMetadataRequest: async (payload: IssueCreateMetadataRequestPayload, sourceWebview?: vscode.Webview) =>
+        this.issueCreateMetadataRequest(payload, sourceWebview),
+      createIssueFromView: async (payload: CreateIssueFromViewPayload, sourceWebview?: vscode.Webview) =>
+        this.createIssueFromView(payload, sourceWebview),
+      createPullRequestFromView: async (payload: CreatePullRequestFromViewPayload, sourceWebview?: vscode.Webview) =>
+        this.createPullRequestFromView(payload, sourceWebview),
+      commentPullRequestFromView: async (payload: CommentPullRequestFromViewPayload, sourceWebview?: vscode.Webview) =>
+        this.commentPullRequestFromView(payload, sourceWebview),
+      findBoardItemById: (itemId: string) => findBoardItemById(this.snapshot, itemId),
+      updateProjectFieldForItem: async (item: BoardItem) => this.updateProjectFieldForItem(item),
+      updateLabelsForItem: async (item: BoardItem) => this.updateLabelsForItem(item),
+      openUrl: async (url: string) => this.openUrl(url),
+      getPullRequestInsights: async (repo: string, number: number) => this.dataService.getPullRequestInsights(repo, number),
+      getActionRunLog: async (repo: string, runId: number) => this.dataService.getActionRunLog(repo, runId),
+      retryActionRun: async (repo: string, runId: number, failedOnly: boolean) => this.dataService.retryActionRun(repo, runId, failedOnly),
+      runWrite: async (action: () => Promise<void>) => this.runWrite(action),
+      openAgentWorkspacePanel: async () => this.openAgentWorkspacePanel(),
+      setSessionPinned: async (sessionId: string, pinned: boolean) => this.setSessionPinned(sessionId, pinned),
+      archiveSession: async (sessionId: string) => this.archiveSession(sessionId),
+      restoreSession: async (sessionId: string) => this.restoreSession(sessionId),
+      sendAgentMessage: async (payload: AgentMessagePayload) => sendAgentMessageHandler(this.agentRuntimeHandlersDeps(), payload),
+      dispatchAgent: async (payload: AgentDispatchPayload) => dispatchAgentHandler(this.agentRuntimeHandlersDeps(), payload),
+      resolvePendingCommand: async (payload: AgentCommandDecisionPayload) =>
+        resolvePendingCommandHandler(this.agentRuntimeHandlersDeps(), payload),
+      stopAgent: async (payload: AgentStopPayload) => stopAgentHandler(this.agentRuntimeHandlersDeps(), payload),
+      addActiveFileContext: async (sourceWebview?: vscode.Webview) =>
+        addActiveFileContextHandler(this.agentRuntimeHandlersDeps(), sourceWebview),
+      addSelectionContext: async (sourceWebview?: vscode.Webview) =>
+        addSelectionContextHandler(this.agentRuntimeHandlersDeps(), sourceWebview),
+      addWorkspaceFileContext: async (sourceWebview?: vscode.Webview) =>
+        addWorkspaceFileContextHandler(this.agentRuntimeHandlersDeps(), sourceWebview),
+      openSessionInEditor: async (sessionId: string) =>
+        openSessionInEditorHandler(this.agentRuntimeHandlersDeps(), sessionId),
+      openPullRequestByNumber: async (repo: string, number: number) =>
+        openPullRequestByNumberHandler(this.agentRuntimeHandlersDeps(), repo, number),
+      logInfo: (message: string) => this.logInfo(message),
+      logWarn: (message: string) => this.logWarn(message)
+    };
+  }
+
+  async updateProjectFieldCommand(): Promise<void> {
+    const item = await pickBoardItem(this.snapshotPickerContext(), "Select issue to update project field");
+    if (!item) {
+      return;
+    }
+    await this.updateProjectFieldForItem(item);
+  }
+
+  async updateLabelsCommand(): Promise<void> {
+    const item = await pickBoardItem(this.snapshotPickerContext(), "Select issue to update labels");
+    if (!item) {
+      return;
+    }
+    await this.updateLabelsForItem(item);
+  }
+
+  private async updateProjectFieldForItem(item: BoardItem): Promise<void> {
+    const selectedField = await vscode.window.showQuickPick(PROJECT_FIELD_NAMES, {
+      title: "Update Project Field",
+      placeHolder: "Select field"
+    });
+    if (!selectedField) {
+      return;
+    }
+    const fieldName = selectedField as ProjectFieldName;
+
+    const options = await this.dataService.getFieldOptions(fieldName);
+    if (options.length === 0) {
+      vscode.window.showWarningMessage(`No options were returned for field '${fieldName}'.`);
+      return;
+    }
+
+    const selectedOption = await vscode.window.showQuickPick(options, {
+      title: `Set ${fieldName}`,
+      placeHolder: "Select option"
+    });
+    if (!selectedOption) {
+      return;
+    }
+
+    const confirm = await vscode.window.showWarningMessage(
+      `Set ${fieldName} to '${selectedOption}' for #${item.issueNumber}?`,
+      { modal: true },
+      "Update"
+    );
+    if (confirm !== "Update") {
+      return;
+    }
+
+    await this.runWrite(async () => {
+      await this.dataService.updateProjectField(item, fieldName, selectedOption);
+      vscode.window.showInformationMessage(`Updated ${fieldName} for #${item.issueNumber}.`);
+    });
+  }
+
+  private async updateLabelsForItem(item: BoardItem): Promise<void> {
+    const mode = await vscode.window.showQuickPick(["Add labels", "Remove labels"], {
+      title: `Update Labels for #${item.issueNumber}`,
+      placeHolder: "Choose action"
+    });
+    if (!mode) {
+      return;
+    }
+
+    const rawLabels = await vscode.window.showInputBox({
+      title: mode,
+      placeHolder: "Comma-separated label names",
+      validateInput: (value) => value.trim().length === 0 ? "At least one label is required." : undefined
+    });
+    if (!rawLabels) {
+      return;
+    }
+
+    const labels = rawLabels
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+
+    if (labels.length === 0) {
+      return;
+    }
+
+    const addLabels = mode === "Add labels" ? labels : [];
+    const removeLabels = mode === "Remove labels" ? labels : [];
+
+    const confirm = await vscode.window.showWarningMessage(
+      `${mode} on #${item.issueNumber}? (${labels.join(", ")})`,
+      { modal: true },
+      "Apply"
+    );
+    if (confirm !== "Apply") {
+      return;
+    }
+
+    await this.runWrite(async () => {
+      await this.dataService.updateLabels(item, addLabels, removeLabels);
+      vscode.window.showInformationMessage(`Updated labels on #${item.issueNumber}.`);
+    });
+  }
+
+  async createPullRequestCommand(): Promise<void> {
+    const workspaceContext = await resolveCurrentWorkspaceContextHandler();
+    await this.openCommandCenterForTabAction({
+      tab: "pullRequests",
+      openPullRequestCreate: true,
+      preferredRepo: workspaceContext?.repoSlug ?? null
+    });
+  }
+
+  async mergePullRequestCommand(): Promise<void> {
+    const pr = await pickPullRequest(this.snapshotPickerContext(), "Select pull request to merge");
+    if (!pr) {
+      return;
+    }
+
+    const method = await vscode.window.showQuickPick(["squash", "merge", "rebase"], {
+      title: `Merge PR #${pr.number}`,
+      placeHolder: "Select merge strategy"
+    });
+    if (!method) {
+      return;
+    }
+
+    const deleteBranchChoice = await vscode.window.showQuickPick(["Yes", "No"], {
+      title: "Delete source branch after merge?",
+      placeHolder: "Recommended: Yes"
+    });
+    if (!deleteBranchChoice) {
+      return;
+    }
+
+    const confirm = await vscode.window.showWarningMessage(
+      `Merge ${pr.repo}#${pr.number} with ${method}?`,
+      { modal: true },
+      "Merge"
+    );
+    if (confirm !== "Merge") {
+      return;
+    }
+
+    await this.runWrite(async () => {
+      await this.dataService.mergePullRequest({
+        repo: pr.repo,
+        number: pr.number,
+        method: method as "merge" | "squash" | "rebase",
+        deleteBranch: deleteBranchChoice === "Yes",
+        auto: false
+      });
+      vscode.window.showInformationMessage(`Merged PR #${pr.number}.`);
+    });
+  }
+
+  async commentPullRequestCommand(): Promise<void> {
+    const pr = await pickPullRequest(this.snapshotPickerContext(), "Select pull request to comment on");
+    if (!pr) {
+      return;
+    }
+
+    const body = await vscode.window.showInputBox({
+      title: `Comment on ${pr.repo}#${pr.number}`,
+      placeHolder: "Comment body",
+      validateInput: (value) => value.trim().length === 0 ? "Comment body is required." : undefined
+    });
+    if (!body) {
+      return;
+    }
+
+    await this.runWrite(async () => {
+      await this.dataService.commentPullRequest(pr.repo, pr.number, body.trim());
+      vscode.window.showInformationMessage(`Comment posted on PR #${pr.number}.`);
+    });
+  }
+
+  async openPullRequestCommand(): Promise<void> {
+    const pr = await pickPullRequest(this.snapshotPickerContext(), "Select pull request to open");
+    if (!pr?.url) {
+      vscode.window.showWarningMessage("No pull request URL found.");
+      return;
+    }
+    await this.openUrl(pr.url);
+  }
+
+  async openIssueCommand(): Promise<void> {
+    const item = await pickBoardItem(this.snapshotPickerContext(), "Select issue to open");
+    if (!item?.url) {
+      vscode.window.showWarningMessage("No issue URL found on the selected item.");
+      return;
+    }
+
+    await this.openUrl(item.url);
+  }
+
+  async openRunCommand(): Promise<void> {
+    const run = await pickRun(this.snapshotPickerContext(), "Select workflow run to open");
+    if (!run?.url) {
+      vscode.window.showWarningMessage("No run URL found for the selected run.");
+      return;
+    }
+
+    await this.openUrl(run.url);
+  }
+
+  async openSessionInEditorCommand(): Promise<void> {
+    if (!this.snapshot || this.snapshot.agents.sessions.length === 0) {
+      await this.refreshNow("manual");
+    }
+
+    if (!this.snapshot || this.snapshot.agents.sessions.length === 0) {
+      vscode.window.showWarningMessage("No agent sessions are available.");
+      return;
+    }
+
+    const selected = await vscode.window.showQuickPick(
+      this.snapshot.agents.sessions.map((session) => ({
+        label: `${session.agentId} (${session.transport})`,
+        description: `${session.sessionId} | ${session.status}`,
+        detail: `${session.repository ?? "(repo)"} | ${session.branch ?? "(branch)"} | ${session.workspace ?? "(workspace)"}`,
+        session
+      })),
+      { title: "Open Agent Session in Editor", placeHolder: "Select session" }
+    );
+
+    if (!selected) {
+      return;
+    }
+
+    await openSessionInEditorHandler(this.agentRuntimeHandlersDeps(), selected.session.sessionId);
+  }
+
+  async openUrl(url: string): Promise<void> {
+    await vscode.env.openExternal(vscode.Uri.parse(url));
+  }
+
+  async openAgentWorkspacePanelCommand(): Promise<void> {
+    await this.openAgentWorkspacePanel();
+  }
+
+  async jarvisActivateCommand(): Promise<void> {
+    const prompt = await vscode.window.showInputBox({
+      title: "Ask Jarvis",
+      prompt: "Ask for a status report, session summary, joke, or approval action",
+      placeHolder: "What is going on across sessions right now?",
+      ignoreFocusOut: true
+    });
+    if (prompt === undefined) {
+      return;
+    }
+    await this.activateJarvis(prompt.trim());
+  }
+
+  async jarvisToggleManualModeCommand(): Promise<void> {
+    this.jarvisManualMode = !this.jarvisManualMode;
+    await this.context.globalState.update(JARVIS_MANUAL_MODE_STORAGE_KEY, this.jarvisManualMode);
+    await this.postJarvisState();
+    vscode.window.showInformationMessage(
+      this.jarvisManualMode
+        ? "Jarvis manual mode enabled. Automatic announcements are paused."
+        : "Jarvis automatic announcements resumed."
+    );
+  }
+
+  getSnapshot(): DashboardSnapshot | null {
+    return this.snapshot;
+  }
+
+  private isLocalSupervisorBaseUrl(baseUrl: string): boolean {
+    try {
+      const parsed = new URL(baseUrl);
+      const host = parsed.hostname.toLowerCase();
+      return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "0.0.0.0";
+    } catch {
+      return false;
+    }
+  }
+
+  private configuredSupervisorConnection(): { baseUrl: string; authToken: string } {
+    const settings = this.getRuntimeSettings();
+    return {
+      baseUrl: settings.supervisorBaseUrl.replace(/\/$/, ""),
+      authToken: settings.supervisorAuthToken
+    };
+  }
+
+  private async ensureWorkspaceSupervisorStarted(): Promise<void> {
+    const settings = this.dataService.getSettings();
+    if (!settings.workspaceSupervisorAutoStart) {
+      this.logInfo("Workspace supervisor auto-start disabled.");
+      return;
+    }
+
+    const baseUrl = settings.supervisorBaseUrl.replace(/\/$/, "");
+    if (!baseUrl || !this.isLocalSupervisorBaseUrl(baseUrl)) {
+      if (baseUrl) {
+        this.logInfo(`Workspace supervisor auto-start skipped for non-local base URL: ${baseUrl}`);
+      }
+      return;
+    }
+
+    try {
+      this.logInfo(`Ensuring workspace supervisor is running at ${baseUrl}.`);
+      const startedBaseUrl = await this.workspaceSupervisorManager.ensureStarted({
+        baseUrl,
+        apiToken: settings.supervisorAuthToken,
+        repoPath: settings.workspaceSupervisorRepoPath,
+        startTimeoutMs: settings.workspaceSupervisorStartTimeoutMs,
+        jarvisApiBaseUrl: settings.jarvisApiBaseUrl,
+        jarvisApiKey: settings.jarvisApiKey,
+        jarvisTextModel: settings.jarvisTextModel,
+        jarvisSpeechModel: settings.jarvisSpeechModel,
+        jarvisVoice: settings.jarvisVoice,
+        jarvisHardCooldownSeconds: settings.jarvisPollinationsHardCooldownSeconds,
+        jarvisSoftCooldownSeconds: settings.jarvisPollinationsSoftCooldownSeconds
+      });
+      this.logInfo(`Workspace supervisor online at ${startedBaseUrl}.`);
+      await this.postStatus(`Workspace supervisor online at ${startedBaseUrl}`, "ok");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logError(`Workspace supervisor startup failed: ${message}`);
+      await this.postStatus(`Workspace supervisor startup failed: ${message}`, "warn");
+    }
+  }
+
+  private getRuntimeSettings(): ReturnType<DataService["getSettings"]> {
+    const settings = this.dataService.getSettings();
+    if (settings.workspaceSupervisorAutoStart) {
+      return settings;
+    }
+    if (!this.embeddedSupervisorBaseUrl || !settings.embeddedSupervisorEnabled || !settings.useSupervisorStream) {
+      return settings;
+    }
+    return {
+      ...settings,
+      supervisorBaseUrl: this.embeddedSupervisorBaseUrl,
+      supervisorAuthToken: this.embeddedSupervisorToken
+    };
+  }
+
+  private async ensureEmbeddedSupervisorStarted(): Promise<void> {
+    await ensureEmbeddedSupervisorStartedHandler(this.embeddedSupervisorHandlersDeps());
+  }
+
+  private startEmbeddedSupervisorSyncLoop(): void {
+    const settings = this.dataService.getSettings();
+    if (
+      this.embeddedSupervisorSyncTimer ||
+      !this.embeddedSupervisorBaseUrl ||
+      !settings.embeddedSupervisorEnabled ||
+      settings.workspaceSupervisorAutoStart
+    ) {
+      return;
+    }
+    this.embeddedSupervisorSyncTimer = setInterval(() => {
+      void this.syncEmbeddedSupervisorNow("poll");
+    }, Math.max(10, settings.refreshSeconds) * 1000);
+  }
+
+  private async syncEmbeddedSupervisorNow(reason: RefreshReason): Promise<boolean> {
+    return await syncEmbeddedSupervisorNowHandler(this.embeddedSupervisorHandlersDeps(), reason);
+  }
+
+  private startJarvisAutoLoop(): void {
+    if (this.jarvisAutoTimer) {
+      return;
+    }
+    this.jarvisAutoTimer = setInterval(() => {
+      void this.tickJarvisAuto();
+    }, JARVIS_AUTO_LOOP_MS);
+  }
+
+  private async tickJarvisAuto(): Promise<void> {
+    await tickJarvisAutoHandler(this.jarvisInteractionHandlersDeps());
+  }
+
+  private canAnnounceJarvis(reason: string, settings: ReturnType<DataService["getSettings"]>): boolean {
+    const now = Date.now();
+    this.pruneJarvisAnnouncementHistory(now);
+    const reasonCooldownMs = settings.jarvisReasonCooldownMinutes * 60_000;
+    const previousReasonMs = this.jarvisReasonCooldownMs.get(reason) ?? 0;
+
+    if (this.jarvisAnnouncementMsHistory.length >= settings.jarvisMaxAnnouncementsPerHour) {
+      return false;
+    }
+    if (now - this.jarvisLastAnnouncementMs < settings.jarvisMinSecondsBetweenAnnouncements * 1000) {
+      return false;
+    }
+    if (previousReasonMs > 0 && now - previousReasonMs < reasonCooldownMs) {
+      return false;
+    }
+    return true;
+  }
+
+  private pruneJarvisAnnouncementHistory(now = Date.now()): void {
+    while (this.jarvisAnnouncementMsHistory.length > 0 && now - this.jarvisAnnouncementMsHistory[0] > 60 * 60_000) {
+      this.jarvisAnnouncementMsHistory.shift();
+    }
+  }
+
+  private rememberJarvisTurn(role: "user" | "assistant", content: string, historyTurns: number): void {
+    const clean = content.trim();
+    if (!clean) {
+      return;
+    }
+    this.jarvisConversation.push({ role, content: clean });
+    const maxTurns = Math.max(2, historyTurns);
+    const maxMessages = maxTurns * 2;
+    if (this.jarvisConversation.length > maxMessages) {
+      this.jarvisConversation.splice(0, this.jarvisConversation.length - maxMessages);
+    }
+  }
+
+  private async activateJarvis(prompt: string): Promise<void> {
+    await activateJarvisHandler(this.jarvisInteractionHandlersDeps(), prompt);
+  }
+
+  private async sendJarvisStartupGreeting(): Promise<void> {
+    const settings = this.getRuntimeSettings();
+    if (!settings.jarvisEnabled) {
+      return;
+    }
+
+    const workspaceName = vscode.workspace.name ?? "Phoenix Ops";
+    const startupPrompt = `Give a concise startup voice greeting for ${workspaceName}. Mention that you are monitoring sessions, approvals, and workflows, and offer one next action.`;
+    this.logInfo("Sending Jarvis startup greeting through workspace supervisor.");
+    const fromSupervisor = await this.requestJarvisRespondFromSupervisor({
+      prompt: startupPrompt,
+      reason: "startup-greeting",
+      auto: false,
+      focusHint: null,
+      rememberPrompt: null,
+      warnOnFailure: true
+    });
+    if (fromSupervisor) {
+      this.logInfo("Jarvis startup greeting handled by workspace supervisor.");
+      return;
+    }
+
+    this.logWarn("Workspace supervisor startup greeting unavailable; falling back to local Jarvis runtime.");
+    const greeting = `Hello. Jarvis online for ${workspaceName}. I am monitoring sessions, approvals, and workflows; ask anytime for a full status callout.`;
+    await this.emitJarvisSpeech({
+      text: greeting,
+      reason: "startup-greeting",
+      auto: false,
+      focusHint: null
+    });
+  }
+
+  private async tryJarvisDelegatedApproval(
+    prompt: string,
+    snapshot: DashboardSnapshot
+  ): Promise<{ text: string; reason: string; focusHint: JarvisFocusHint | null } | null> {
+    return await tryJarvisDelegatedApprovalHandler(this.jarvisDelegatedApprovalDeps(), prompt, snapshot);
+  }
+
+  private getJarvisServiceSettings(settings: ReturnType<DataService["getSettings"]>): {
+    apiBaseUrl: string;
+    apiKey: string;
+    textModel: string;
+    speechModel: string;
+    voice: string;
+  } {
+    return {
+      apiBaseUrl: settings.jarvisApiBaseUrl,
+      apiKey: settings.jarvisApiKey,
+      textModel: settings.jarvisTextModel,
+      speechModel: settings.jarvisSpeechModel,
+      voice: settings.jarvisVoice
+    };
+  }
+
+  private async emitJarvisPayload(payload: JarvisSpeakPayload, forwardToSupervisor: boolean): Promise<void> {
+    const clean = payload.text.trim();
+    if (!clean) {
+      return;
+    }
+
+    payload.text = clean;
+    if (payload.auto) {
+      const now = Date.now();
+      this.jarvisLastAnnouncementMs = now;
+      this.jarvisAnnouncementMsHistory.push(now);
+      this.jarvisReasonCooldownMs.set(payload.reason, now);
+      this.pruneJarvisAnnouncementHistory(now);
+    }
+
+    this.jarvisLastMessage = clean;
+    this.jarvisLastReason = payload.reason;
+    const webviewPayload: JarvisSpeakPayload = { ...payload };
+    if (webviewPayload.audioBase64) {
+      const queuedOnHost = this.jarvisHostAudioPlayer.enqueue({
+        audioBase64: webviewPayload.audioBase64,
+        mimeType: webviewPayload.mimeType,
+        reason: webviewPayload.reason,
+        auto: webviewPayload.auto
+      });
+      if (queuedOnHost) {
+        webviewPayload.audioHandledByHost = true;
+        webviewPayload.audioBase64 = null;
+        webviewPayload.mimeType = null;
+        this.logInfo(`[jarvis-audio-host] queued playback (reason=${webviewPayload.reason}, auto=${webviewPayload.auto}).`);
+      } else {
+        webviewPayload.audioHandledByHost = false;
+      }
+    }
+
+    await this.postMessageToAllWebviews("jarvisSpeak", webviewPayload);
+    await this.postJarvisState();
+    if (forwardToSupervisor) {
+      void this.forwardJarvisSpeakToSupervisor(payload);
+    }
+  }
+
+  private async requestJarvisRespondFromSupervisor(input: {
+    prompt: string;
+    reason: string;
+    auto: boolean;
+    focusHint: JarvisFocusHint | null;
+    rememberPrompt: string | null;
+    warnOnFailure: boolean;
+  }): Promise<boolean> {
+    return await requestJarvisRespondFromSupervisorHandler(this.jarvisSupervisorHandlersDeps(), input);
+  }
+
+  private async emitJarvisSpeech(input: {
+    text: string;
+    reason: string;
+    auto: boolean;
+    focusHint: JarvisFocusHint | null;
+  }): Promise<void> {
+    const clean = input.text.trim();
+    if (!clean) {
+      return;
+    }
+
+    const settings = this.getRuntimeSettings();
+    let speech: JarvisSpeechResult | null = null;
+
+    const speechCooldown = this.jarvisPollinationsCooldown.snapshot("speech");
+    if (!speechCooldown.degraded || !speechCooldown.untilMs) {
+      try {
+        speech = await this.jarvisService.synthesizeSpeech(clean, this.getJarvisServiceSettings(settings));
+        this.clearPollinationsCooldown("speech");
+      } catch (error) {
+        this.notePollinationsFailure("speech", error, settings);
+      }
+    }
+
+    const payload: JarvisSpeakPayload = {
+      text: clean,
+      reason: input.reason,
+      auto: input.auto,
+      focusHint: input.focusHint,
+      mimeType: speech?.mimeType ?? null,
+      audioBase64: speech?.audioBase64 ?? null
+    };
+
+    await this.emitJarvisPayload(payload, true);
+  }
+
+  private pollinationsCooldownNotice(
+    channel: "chat" | "speech",
+    failureKind: PollinationsFailureKind | null,
+    untilMs: number
+  ): string {
+    const kind = failureKind ?? "unknown";
+    return `Pollinations ${channel} cooldown is active (${kind}) until ${new Date(untilMs).toISOString()}.`;
+  }
+
+  private clearPollinationsCooldown(channel: "chat" | "speech"): void {
+    const current = this.jarvisPollinationsCooldown.snapshot(channel);
+    if (!current.degraded && !current.failureKind) {
+      return;
+    }
+    this.jarvisPollinationsCooldown.clear(channel);
+    void this.postJarvisState();
+  }
+
+  private notePollinationsFailure(
+    channel: "chat" | "speech",
+    error: unknown,
+    settings: ReturnType<DataService["getSettings"]>
+  ): string {
+    const normalized = normalizePollinationsFailure(error, {
+      endpoint: settings.jarvisApiBaseUrl,
+      channel,
+      messagePrefix: `Pollinations ${channel} request failed`
+    });
+
+    const { untilMs } = this.jarvisPollinationsCooldown.noteFailure(
+      channel,
+      normalized,
+      {
+        hardCooldownSeconds: settings.jarvisPollinationsHardCooldownSeconds,
+        softCooldownSeconds: settings.jarvisPollinationsSoftCooldownSeconds
+      }
+    );
+
+    if (this.jarvisPollinationsCooldown.shouldWarn(channel, untilMs)) {
+      this.jarvisPollinationsCooldown.markWarned(channel, untilMs);
+      void this.postStatus(
+        `Jarvis ${channel} API degraded (${normalized.kind}). Cooldown until ${new Date(untilMs).toISOString()}.`,
+        "warn"
+      );
+    }
+
+    void this.postJarvisState();
+    return normalized.message;
+  }
+
+  private async forwardJarvisSpeakToSupervisor(payload: JarvisSpeakPayload): Promise<void> {
+    await forwardJarvisSpeakToSupervisorHandler(this.jarvisSupervisorHandlersDeps(), payload);
+  }
+
+  private jarvisStatePayload(): JarvisStatePayload {
+    const settings = this.getRuntimeSettings();
+    const chat = this.jarvisPollinationsCooldown.snapshot("chat");
+    const speech = this.jarvisPollinationsCooldown.snapshot("speech");
+    this.pruneJarvisAnnouncementHistory(Date.now());
+    return {
+      enabled: settings.jarvisEnabled,
+      manualMode: this.jarvisManualMode,
+      autoAnnouncements: settings.jarvisAutoAnnouncements,
+      maxAnnouncementsPerHour: settings.jarvisMaxAnnouncementsPerHour,
+      minSecondsBetweenAnnouncements: settings.jarvisMinSecondsBetweenAnnouncements,
+      announcementsLastHour: this.jarvisAnnouncementMsHistory.length,
+      lastReason: this.jarvisLastReason,
+      lastMessage: this.jarvisLastMessage,
+      chatDegraded: chat.degraded,
+      chatFailureKind: chat.failureKind,
+      chatCooldownUntil: chat.untilMs ? new Date(chat.untilMs).toISOString() : null,
+      speechDegraded: speech.degraded,
+      speechFailureKind: speech.failureKind,
+      speechCooldownUntil: speech.untilMs ? new Date(speech.untilMs).toISOString() : null
+    };
+  }
+
+  private async postJarvisState(sourceWebview?: vscode.Webview): Promise<void> {
+    await this.postWebviewResponse(sourceWebview, "jarvisState", this.jarvisStatePayload());
+  }
+
+  private async handleIncomingMessage(message: { type?: unknown; command?: unknown; url?: unknown }, sourceWebview?: vscode.Webview): Promise<void> {
+    await routeWebviewMessage(this.webviewMessageRouterContext(), message, sourceWebview);
+  }
+
+  private async openAgentWorkspacePanel(): Promise<void> {
+    const revealed = this.agentViewProvider.show(false);
+    if (!revealed) {
+      try {
+        await vscode.commands.executeCommand("workbench.view.extension.phoenixOpsAgent");
+      } catch {
+        // Best effort: if the container command is unavailable, continue without failing activation.
+      }
+      this.agentViewProvider.show(false);
+    }
+    await this.pushSnapshot();
+    await this.postAuthState();
+    await this.postJarvisState();
+  }
+
+  private async openSessionPanel(sessionId: string): Promise<void> {
+    const existing = this.sessionPanels.get(sessionId);
+    if (existing) {
+      existing.reveal(vscode.ViewColumn.Beside, false);
+      await this.pushSnapshot();
+      await this.postAuthState();
+      return;
+    }
+
+    const panel = this.createSessionPanel(sessionId);
+    this.sessionPanels.set(sessionId, panel);
+    panel.onDidDispose(() => {
+      this.sessionPanels.delete(sessionId);
+    }, null, this.context.subscriptions);
+    await this.pushSnapshot();
+    await this.postAuthState();
+    await this.postJarvisState();
+  }
+
+  private createSessionPanel(lockedSessionId: string): vscode.WebviewPanel {
+    const title = `Phoenix Ops Agent: ${lockedSessionId}`;
+    const panel = vscode.window.createWebviewPanel(
+      "phoenixOps.agentSessionEditor",
+      title,
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")]
+      }
+    );
+
+    panel.webview.html = this.agentViewProvider.getHtml(panel.webview, {
+      mode: "agent-only",
+      lockedSessionId
+    });
+    panel.webview.onDidReceiveMessage((message) => {
+      void this.handleIncomingMessage(message as { type?: unknown; command?: unknown; url?: unknown }, panel.webview);
+    }, null, this.context.subscriptions);
+
+    return panel;
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.streamClient.dispose();
+    this.jarvisHostAudioPlayer.dispose();
+    this.sessionPanels.forEach((panel) => panel.dispose());
+    this.sessionPanels.clear();
+    if (this.pollingTimer) {
+      clearInterval(this.pollingTimer);
+      this.pollingTimer = null;
+    }
+    if (this.staleTimer) {
+      clearInterval(this.staleTimer);
+      this.staleTimer = null;
+    }
+    if (this.jarvisAutoTimer) {
+      clearInterval(this.jarvisAutoTimer);
+      this.jarvisAutoTimer = null;
+    }
+    if (this.embeddedSupervisorSyncTimer) {
+      clearInterval(this.embeddedSupervisorSyncTimer);
+      this.embeddedSupervisorSyncTimer = null;
+    }
+    this.workspaceSupervisorManager.dispose();
+    this.embeddedSupervisorManager.dispose();
+    this.output.dispose();
+  }
+
+  private async runWrite(action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
+      await this.refreshNow("write");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`Phoenix Command Center write failed: ${message}`);
+    }
+  }
+
+  private async issueCreateMetadataRequest(payload: IssueCreateMetadataRequestPayload, sourceWebview?: vscode.Webview): Promise<void> {
+    await issueCreateMetadataRequestHandler(this.issuePullRequestHandlersDeps(), payload, sourceWebview);
+  }
+
+  private async createIssueFromView(payload: CreateIssueFromViewPayload, sourceWebview?: vscode.Webview): Promise<void> {
+    await createIssueFromViewHandler(this.issuePullRequestHandlersDeps(), payload, sourceWebview);
+  }
+
+  private async createPullRequestFromView(payload: CreatePullRequestFromViewPayload, sourceWebview?: vscode.Webview): Promise<void> {
+    await createPullRequestFromViewHandler(this.issuePullRequestHandlersDeps(), payload, sourceWebview);
+  }
+
+  private async commentPullRequestFromView(payload: CommentPullRequestFromViewPayload, sourceWebview?: vscode.Webview): Promise<void> {
+    await commentPullRequestFromViewHandler(this.issuePullRequestHandlersDeps(), payload, sourceWebview);
+  }
+
+  private async openCommandCenterForTabAction(payload: {
+    tab: "board" | "issues" | "actions" | "pullRequests";
+    openIssueCreate?: boolean;
+    openPullRequestCreate?: boolean;
+    preferredRepo?: string | null;
+  }): Promise<void> {
+    await openCommandCenterForTabActionHandler(this.issuePullRequestHandlersDeps(), payload);
+  }
+
+  private async postRuntimeContext(sourceWebview?: vscode.Webview): Promise<void> {
+    await postRuntimeContextHandler(this.issuePullRequestHandlersDeps(), sourceWebview);
+  }
+
+  private async restartSupervisorDataFlow(): Promise<void> {
+    this.streamClient.dispose();
+    this.streamConnected = false;
+    this.stopPolling();
+
+    if (this.embeddedSupervisorSyncTimer) {
+      clearInterval(this.embeddedSupervisorSyncTimer);
+      this.embeddedSupervisorSyncTimer = null;
+    }
+
+    await this.ensureWorkspaceSupervisorStarted();
+    await this.ensureEmbeddedSupervisorStarted();
+
+    const runtimeSettings = this.getRuntimeSettings();
+    if (this.embeddedSupervisorBaseUrl && runtimeSettings.useSupervisorStream) {
+      await this.syncEmbeddedSupervisorNow("manual");
+      this.startEmbeddedSupervisorSyncLoop();
+    }
+
+    await this.startDataFlow();
+    await this.refreshNow("manual");
+    await this.postRuntimeContext();
+  }
+
+  private resolveAvailableMcpToolIds(): string[] {
+    const config = vscode.workspace.getConfiguration("phoenixOps");
+    const configured = config.get<string[]>("mcpToolOptions", []);
+    const configuredTools = Array.isArray(configured)
+      ? configured.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
+      : [];
+
+    const settings = vscode.workspace.getConfiguration();
+    const rawMcpServers =
+      settings.get<Record<string, unknown>>("mcp.servers", {}) ??
+      vscode.workspace.getConfiguration("mcp").get<Record<string, unknown>>("servers", {});
+    const serverNames = rawMcpServers && typeof rawMcpServers === "object"
+      ? Object.keys(rawMcpServers).map((server) => `server:${server}`)
+      : [];
+
+    const merged = [...configuredTools, ...serverNames];
+    return [...new Set(merged)].sort((left, right) => left.localeCompare(right));
+  }
+
+  private invalidateAgentModelCatalogCache(): void {
+    invalidateAgentModelCatalogCacheHandler(this.agentModelCatalogHandlersDeps());
+  }
+
+  private async resolveAgentModelCatalog(
+    settings: ReturnType<DataService["getSettings"]>
+  ): Promise<AgentModelCatalogPayload> {
+    return await resolveAgentModelCatalogHandler(this.agentModelCatalogHandlersDeps(), settings);
+  }
+
+  private async startDataFlow(): Promise<void> {
+    await startDataFlowHandler(this.supervisorFlowHandlersDeps());
+  }
+
+  private async tryStartSupervisorStream(): Promise<boolean> {
+    return await tryStartSupervisorStreamHandler(this.supervisorFlowHandlersDeps());
+  }
+
+  private startPolling(): void {
+    if (this.pollingTimer) {
+      return;
+    }
+
+    const settings = this.getRuntimeSettings();
+    const intervalMs = settings.refreshSeconds * 1000;
+
+    this.pollingTimer = setInterval(() => {
+      void this.refreshNow("poll");
+    }, intervalMs);
+
+    void this.postStatus(settings.useSupervisorStream ? "Polling supervisor snapshot" : "Polling GitHub", "warn");
+  }
+
+  private stopPolling(): void {
+    if (!this.pollingTimer) {
+      return;
+    }
+    clearInterval(this.pollingTimer);
+    this.pollingTimer = null;
+  }
+
+  private startStaleMonitor(): void {
+    if (this.staleTimer) {
+      return;
+    }
+
+    this.staleTimer = setInterval(() => {
+      if (!this.snapshot) {
+        return;
+      }
+
+      const refreshWindowMs = this.getRuntimeSettings().refreshSeconds * 2000;
+      const stale = Date.now() - this.lastUpdatedMs > refreshWindowMs;
+      if (stale !== this.snapshot.meta.stale) {
+        this.snapshot.meta.stale = stale;
+        void this.pushSnapshot();
+      }
+    }, 5000);
+  }
+
+  private async refreshNow(reason: RefreshReason): Promise<void> {
+    const settings = this.getRuntimeSettings();
+
+    try {
+      this.sequence += 1;
+
+      if (settings.useSupervisorStream) {
+        if (this.embeddedSupervisorBaseUrl) {
+          await this.syncEmbeddedSupervisorNow(reason);
+        }
+        const refreshedFromSupervisor = await this.refreshFromSupervisor(reason);
+        if (refreshedFromSupervisor) {
+          if (reason === "manual") {
+            void this.postStatus("Manual refresh complete (supervisor)", "ok");
+          }
+          return;
+        }
+
+        if (!settings.allowDirectGhPollingFallback) {
+          if (this.snapshot) {
+            this.snapshot.meta.stale = true;
+            this.snapshot.meta.streamConnected = false;
+            this.snapshot.meta.generatedAt = new Date().toISOString();
+            await this.pushSnapshot();
+          }
+
+          if (reason !== "poll") {
+            void this.postStatus("Supervisor unavailable; direct gh fallback is disabled", "err");
+          }
+          return;
+        }
+      }
+
+      const snapshot = await this.dataService.fetchLocalSnapshot(this.sequence, this.streamConnected, false, reason);
+      this.acceptSnapshot(snapshot);
+
+      if (snapshot.meta.stale) {
+        void this.postStatus("Using cached data (rate-limited or cooling down)", "warn");
+      } else if (reason === "manual") {
+        void this.postStatus("Manual refresh complete", "ok");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      void this.postStatus(`Refresh failed: ${message}`, "err");
+    }
+  }
+
+  private async refreshFromSupervisor(reason: RefreshReason): Promise<boolean> {
+    return await refreshFromSupervisorHandler(this.supervisorFlowHandlersDeps(), reason);
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async waitForSupervisorSnapshotReady(baseUrl: string, authToken: string, timeoutMs: number): Promise<void> {
+    const startedAt = Date.now();
+    let attempts = 0;
+    while (Date.now() - startedAt < timeoutMs) {
+      attempts += 1;
+      if (await this.checkSupervisorSnapshot(baseUrl, authToken)) {
+        if (attempts > 1) {
+          this.logInfo(`Supervisor snapshot ready after ${attempts} checks (${Date.now() - startedAt}ms).`);
+        }
+        return;
+      }
+      await this.sleep(320);
+    }
+    this.logWarn(`Supervisor snapshot readiness check timed out after ${attempts} attempts (${timeoutMs}ms).`);
+  }
+
+  private async checkSupervisorSnapshot(baseUrl: string, authToken: string): Promise<boolean> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+    try {
+      const headers: Record<string, string> = {};
+      if (authToken) {
+        headers.Authorization = `Bearer ${authToken}`;
+      }
+      const response = await fetch(`${baseUrl}/snapshot`, {
+        method: "GET",
+        signal: controller.signal,
+        headers
+      });
+      return response.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  private onStreamEnvelope(envelope: StreamEnvelope): void {
+    if (!this.snapshot) {
+      if (envelope.eventType === "snapshot") {
+        const payload = this.withAgents(envelope.payload as DashboardSnapshot);
+        this.acceptSnapshot({
+          ...payload,
+          meta: {
+            ...payload.meta,
+            source: "supervisor",
+            streamConnected: true,
+            stale: false,
+            sequence: envelope.sequence
+          }
+        });
+      }
+      return;
+    }
+
+    const next = applyStreamEnvelope(this.snapshot, envelope);
+    this.acceptSnapshot(next);
+  }
+
+  private acceptSnapshot(snapshot: DashboardSnapshot): void {
+    this.snapshot = this.decorateSnapshot(this.withAgents(snapshot));
+    this.lastUpdatedMs = Date.now();
+    this.streamConnected = this.snapshot.meta.streamConnected;
+    void this.pushSnapshot();
+  }
+
+  private async pushSnapshot(): Promise<void> {
+    if (!this.snapshot) {
+      return;
+    }
+
+    await this.postMessageToAllWebviews("snapshot", this.snapshot);
+  }
+
+  private async postStatus(text: string, level: "ok" | "warn" | "err"): Promise<void> {
+    if (level === "ok") {
+      this.logInfo(text);
+    } else if (level === "warn") {
+      this.logWarn(text);
+    } else {
+      this.logError(text);
+    }
+    await this.postMessageToAllWebviews("status", { text, level });
+  }
+
+  private async postAuthState(): Promise<void> {
+    await this.postMessageToAllWebviews("auth", { ok: this.ghAuthOk });
+  }
+
+  private logInfo(message: string): void {
+    this.output.appendLine(`[${new Date().toISOString()}] [info] ${message}`);
+  }
+
+  private logWarn(message: string): void {
+    this.output.appendLine(`[${new Date().toISOString()}] [warn] ${message}`);
+  }
+
+  private logError(message: string): void {
+    this.output.appendLine(`[${new Date().toISOString()}] [error] ${message}`);
+  }
+
+  private async postMessageToAllWebviews(type: string, payload: unknown): Promise<void> {
+    await this.boardViewProvider.postMessage(type, payload);
+    await this.agentViewProvider.postMessage(type, payload);
+    for (const panel of this.sessionPanels.values()) {
+      await this.safePostToPanel(panel, type, payload);
+    }
+  }
+
+  private async safePostToPanel(panel: vscode.WebviewPanel, type: string, payload: unknown): Promise<void> {
+    try {
+      await panel.webview.postMessage({ type, payload });
+    } catch {
+      // Ignore messages to disposed/racing panels.
+    }
+  }
+
+  private async postContextResponse(
+    sourceWebview: vscode.Webview | undefined,
+    type: "contextAdded" | "contextError",
+    payload: unknown
+  ): Promise<void> {
+    if (sourceWebview) {
+      await sourceWebview.postMessage({ type, payload });
+      return;
+    }
+    await this.postMessageToAllWebviews(type, payload);
+  }
+
+  private async postWebviewResponse(
+    sourceWebview: vscode.Webview | undefined,
+    type: string,
+    payload: unknown
+  ): Promise<void> {
+    if (sourceWebview) {
+      await sourceWebview.postMessage({ type, payload });
+      return;
+    }
+    await this.postMessageToAllWebviews(type, payload);
+  }
+
+  private async fetchSnapshot(url: string, authToken = ""): Promise<DashboardSnapshot> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    try {
+      const headers: Record<string, string> = {};
+      if (authToken) {
+        headers.Authorization = `Bearer ${authToken}`;
+      }
+
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return this.withAgents((await response.json()) as DashboardSnapshot);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  private withAgents(snapshot: DashboardSnapshot): DashboardSnapshot {
+    const raw = snapshot as DashboardSnapshot & {
+      actions?: {
+        runs?: DashboardSnapshot["actions"]["runs"];
+        jobs?: DashboardSnapshot["actions"]["jobs"];
+        pullRequests?: DashboardSnapshot["actions"]["pullRequests"];
+      };
+      agents?: {
+        sessions?: DashboardSnapshot["agents"]["sessions"];
+        feed?: DashboardSnapshot["agents"]["feed"];
+        pendingCommands?: DashboardSnapshot["agents"]["pendingCommands"];
+      };
+    };
+
+    return {
+      ...snapshot,
+      actions: {
+        runs: raw.actions?.runs ?? [],
+        jobs: raw.actions?.jobs ?? [],
+        pullRequests: raw.actions?.pullRequests ?? []
+      },
+      agents: {
+        sessions: raw.agents?.sessions ?? [],
+        feed: raw.agents?.feed ?? [],
+        pendingCommands: raw.agents?.pendingCommands ?? []
+      }
+    };
+  }
+
+  private decorateSnapshot(snapshot: DashboardSnapshot): DashboardSnapshot {
+    const sessions = snapshot.agents.sessions.map((session) => ({
+      ...session,
+      pinned: this.pinnedSessionIds.has(session.sessionId),
+      archived: this.archivedSessionIds.has(session.sessionId)
+    }));
+
+    const pendingCommands = [...snapshot.agents.pendingCommands].sort((a, b) => {
+      const left = Date.parse(a.updatedAt) || 0;
+      const right = Date.parse(b.updatedAt) || 0;
+      return right - left;
+    });
+
+    return {
+      ...snapshot,
+      agents: {
+        sessions,
+        feed: snapshot.agents.feed,
+        pendingCommands
+      }
+    };
+  }
+
+  private loadSessionPreferences(): void {
+    const pinned = this.context.globalState.get<string[]>(PINNED_SESSION_STORAGE_KEY, []);
+    const archived = this.context.globalState.get<string[]>(ARCHIVED_SESSION_STORAGE_KEY, []);
+    this.pinnedSessionIds = new Set(pinned);
+    this.archivedSessionIds = new Set(archived);
+  }
+
+  private async persistSessionPreferences(): Promise<void> {
+    await this.context.globalState.update(PINNED_SESSION_STORAGE_KEY, [...this.pinnedSessionIds]);
+    await this.context.globalState.update(ARCHIVED_SESSION_STORAGE_KEY, [...this.archivedSessionIds]);
+  }
+
+  private async setSessionPinned(sessionId: string, pinned: boolean): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    if (pinned) {
+      this.pinnedSessionIds.add(sessionId);
+    } else {
+      this.pinnedSessionIds.delete(sessionId);
+    }
+    await this.persistSessionPreferences();
+    if (this.snapshot) {
+      this.snapshot = this.decorateSnapshot(this.snapshot);
+      await this.pushSnapshot();
+    }
+  }
+
+  private async archiveSession(sessionId: string): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    this.archivedSessionIds.add(sessionId);
+    await this.persistSessionPreferences();
+    if (this.snapshot) {
+      this.snapshot = this.decorateSnapshot(this.snapshot);
+      await this.pushSnapshot();
+    }
+  }
+
+  private async restoreSession(sessionId: string): Promise<void> {
+    if (!sessionId) {
+      return;
+    }
+
+    this.archivedSessionIds.delete(sessionId);
+    await this.persistSessionPreferences();
+    if (this.snapshot) {
+      this.snapshot = this.decorateSnapshot(this.snapshot);
+      await this.pushSnapshot();
+    }
+  }
+
+}

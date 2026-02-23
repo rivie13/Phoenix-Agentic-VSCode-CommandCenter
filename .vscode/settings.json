@@ -1,0 +1,12 @@
+{
+  "mcp.servers": {
+    "phoenix-qa-handoff": {
+      "command": "node",
+      "args": ["..\\Phoenix-Agentic-Workspace-Supervisor\\dist\\qaMcpServer.js"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "SUPERVISOR_QA_API_BASE_URL": "http://127.0.0.1:8787"
+      }
+    }
+  }
+}
