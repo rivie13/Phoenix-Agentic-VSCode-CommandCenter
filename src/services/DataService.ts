@@ -39,6 +39,12 @@ interface RuntimeSettings {
   embeddedSupervisorApiToken: string;
   codexCliPath: string;
   copilotCliPath: string;
+  cliBootstrapOnStartup: boolean;
+  cliStartupSpawnPtyTerminals: boolean;
+  cliStartupAutoInstallMissing: boolean;
+  cliStartupAutoSignIn: boolean;
+  codexCliInstallCommand: string;
+  copilotCliInstallCommand: string;
   codexDefaultModel: string;
   copilotDefaultModel: string;
   copilotCloudEnabled: boolean;
@@ -127,6 +133,20 @@ interface PersistedCacheFile {
 
 const ACTIONS_LOOKBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+function stripWrappingQuotes(value: string): string {
+  let next = value.trim();
+  while (next.length >= 2) {
+    const first = next[0];
+    const last = next[next.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      next = next.slice(1, -1).trim();
+      continue;
+    }
+    break;
+  }
+  return next;
+}
+
 export class DataService {
   private readonly gh: GhClient;
   private readonly cacheFilePath: string | null;
@@ -194,8 +214,14 @@ export class DataService {
     const embeddedSupervisorHost = config.get<string>("embeddedSupervisorHost", "127.0.0.1").trim() || "127.0.0.1";
     const embeddedSupervisorPort = Math.max(1, Math.min(65535, config.get<number>("embeddedSupervisorPort", 8789)));
     const embeddedSupervisorApiToken = config.get<string>("embeddedSupervisorApiToken", "").trim();
-    const codexCliPath = config.get<string>("codexCliPath", "codex").trim() || "codex";
-    const copilotCliPath = config.get<string>("copilotCliPath", "copilot").trim() || "copilot";
+    const codexCliPath = stripWrappingQuotes(config.get<string>("codexCliPath", "codex").trim()) || "codex";
+    const copilotCliPath = stripWrappingQuotes(config.get<string>("copilotCliPath", "copilot").trim()) || "copilot";
+    const cliBootstrapOnStartup = config.get<boolean>("cliBootstrapOnStartup", true);
+    const cliStartupSpawnPtyTerminals = config.get<boolean>("cliStartupSpawnPtyTerminals", true);
+    const cliStartupAutoInstallMissing = config.get<boolean>("cliStartupAutoInstallMissing", true);
+    const cliStartupAutoSignIn = config.get<boolean>("cliStartupAutoSignIn", true);
+    const codexCliInstallCommand = stripWrappingQuotes(config.get<string>("codexCliInstallCommand", "npm install -g @openai/codex").trim());
+    const copilotCliInstallCommand = stripWrappingQuotes(config.get<string>("copilotCliInstallCommand", "npm install -g @github/copilot").trim());
     const codexDefaultModel = (explicitStringSetting("codexDefaultModel") ?? "").trim();
     const copilotDefaultModel = (explicitStringSetting("copilotDefaultModel") ?? "").trim();
     const copilotCloudEnabled = config.get<boolean>("copilotCloudEnabled", false);
@@ -223,9 +249,12 @@ export class DataService {
       : configuredJarvisSpeechModel;
     const jarvisVoice = config.get<string>("jarvisVoice", "onyx").trim() || "onyx";
     const configuredJarvisTtsProvider = (explicitStringSetting("jarvisTtsProvider") ?? "").trim().toLowerCase();
-    const jarvisTtsProvider = configuredJarvisTtsProvider === "gemini" || configuredJarvisTtsProvider === "pollinations"
-      ? configuredJarvisTtsProvider
-      : "gemini-with-fallback";
+    const jarvisTtsProvider =
+      configuredJarvisTtsProvider === "gemini-with-fallback" ||
+      configuredJarvisTtsProvider === "gemini" ||
+      configuredJarvisTtsProvider === "pollinations"
+        ? configuredJarvisTtsProvider
+        : "gemini-with-fallback";
     const jarvisGeminiApiKey = (explicitStringSetting("jarvisGeminiApiKey") ?? "").trim();
     const jarvisGeminiModel = (explicitStringSetting("jarvisGeminiModel") ?? "").trim() || "gemini-2.5-flash-preview-tts";
     const jarvisGeminiVoice = (explicitStringSetting("jarvisGeminiVoice") ?? "").trim() || "Charon";
@@ -262,6 +291,12 @@ export class DataService {
       embeddedSupervisorApiToken,
       codexCliPath,
       copilotCliPath,
+      cliBootstrapOnStartup,
+      cliStartupSpawnPtyTerminals,
+      cliStartupAutoInstallMissing,
+      cliStartupAutoSignIn,
+      codexCliInstallCommand,
+      copilotCliInstallCommand,
       codexDefaultModel,
       copilotDefaultModel,
       copilotCloudEnabled,

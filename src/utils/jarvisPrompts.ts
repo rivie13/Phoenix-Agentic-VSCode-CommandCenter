@@ -75,8 +75,18 @@ function clipJarvisContext(value: string | null | undefined, maxLength: number):
   return `${compact.slice(0, Math.max(1, maxLength - 3)).trimEnd()}...`;
 }
 
+function isJarvisMetaSession(session: AgentSession): boolean {
+  const service = (session.service ?? "").toLowerCase();
+  const agentId = session.agentId.toLowerCase();
+  return service === "jarvis" || agentId.includes("jarvis");
+}
+
+function nonMetaJarvisSessions(snapshot: DashboardSnapshot): AgentSession[] {
+  return snapshot.agents.sessions.filter((session) => !isJarvisMetaSession(session));
+}
+
 function prioritizedJarvisSessions(snapshot: DashboardSnapshot): AgentSession[] {
-  return [...snapshot.agents.sessions].sort((left, right) => {
+  return [...nonMetaJarvisSessions(snapshot)].sort((left, right) => {
     const rankDelta = jarvisStatusPriority(left.status) - jarvisStatusPriority(right.status);
     if (rankDelta !== 0) {
       return rankDelta;
@@ -95,9 +105,10 @@ export function determineJarvisPersonality(
   lastAnnouncementMs: number,
   nowMs: number
 ): JarvisPersonalityMode {
+  const sessions = nonMetaJarvisSessions(snapshot);
   const pending = snapshot.agents.pendingCommands.filter((command) => command.status === "pending");
   const highRiskPending = pending.filter((command) => command.risk === "high");
-  const errorSessions = snapshot.agents.sessions.filter((session) => session.status === "error");
+  const errorSessions = sessions.filter((session) => session.status === "error");
   const staleMs = nowMs - lastAnnouncementMs;
   const staleThresholdMs = 30 * 60_000; // 30 minutes
 
@@ -112,7 +123,7 @@ export function determineJarvisPersonality(
   }
 
   // Attentive: routine operations
-  if (pending.length > 0 || snapshot.agents.sessions.length > 2 || errorSessions.length === 1) {
+  if (pending.length > 0 || sessions.length > 2 || errorSessions.length === 1) {
     return "attentive";
   }
 
@@ -143,6 +154,7 @@ export function pickAutoJarvisDecision(
   snapshot: DashboardSnapshot,
   input: PickJarvisAutoDecisionInput
 ): JarvisAutoDecision | null {
+  const sessions = nonMetaJarvisSessions(snapshot);
   // Identity collection is handled at startup via VS Code QuickInput (see loadJarvisIdentity).
   // The identity is made available here for personalisation in prompts but does not gate decisions.
 
@@ -157,7 +169,7 @@ export function pickAutoJarvisDecision(
     };
   }
 
-  const waitingSessions = snapshot.agents.sessions.filter((session) => session.status === "waiting");
+  const waitingSessions = sessions.filter((session) => session.status === "waiting");
   if (waitingSessions.length >= 3) {
     const session = waitingSessions[0];
     return {
@@ -307,8 +319,9 @@ export function buildJarvisUserPrompt(
   identity?: JarvisIdentity
 ): string {
   const userName = identity?.name ? `${identity.name}` : "operator";
-  const waiting = snapshot.agents.sessions.filter((session) => session.status === "waiting").length;
-  const errored = snapshot.agents.sessions.filter((session) => session.status === "error").length;
+  const sessions = nonMetaJarvisSessions(snapshot);
+  const waiting = sessions.filter((session) => session.status === "waiting").length;
+  const errored = sessions.filter((session) => session.status === "error").length;
   const pending = snapshot.agents.pendingCommands.filter((command) => command.status === "pending");
   const highRisk = pending.filter((command) => command.risk === "high").length;
   const mediumRisk = pending.filter((command) => command.risk === "medium").length;
@@ -361,7 +374,7 @@ export function buildJarvisUserPrompt(
     "Generate a spoken-ready summary from current session context only. Do not invent details.",
     `Board items: ${snapshot.board.items.length}`,
     `Actions runs: ${snapshot.actions.runs.length} total, ${attentionRuns} need attention`,
-    `Agent sessions: ${snapshot.agents.sessions.length} total, ${waiting} waiting, ${errored} error`,
+    `Agent sessions: ${sessions.length} total, ${waiting} waiting, ${errored} error`,
     `Session highlights: ${sessionHighlights || "none"}`,
     `Pending commands: ${pending.length} total (${highRisk} high / ${mediumRisk} medium / ${lowRisk} low)`,
     `Pending command details: ${pendingDetails || "none"}`,
@@ -383,7 +396,8 @@ export function buildFallbackJarvisReply(
   identity?: JarvisIdentity
 ): string {
   const userName = identity?.name ? `${identity.name}` : "sir";
-  const waiting = snapshot.agents.sessions.filter((session) => session.status === "waiting").length;
+  const sessions = nonMetaJarvisSessions(snapshot);
+  const waiting = sessions.filter((session) => session.status === "waiting").length;
   const pending = snapshot.agents.pendingCommands.filter((command) => command.status === "pending").length;
   const failures = snapshot.actions.runs.filter((run) => {
     const conclusion = (run.conclusion ?? "").toLowerCase();

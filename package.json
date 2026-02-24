@@ -22,6 +22,8 @@
     "onCommand:phoenixOps.signIn",
     "onCommand:phoenixOps.signInCodexCli",
     "onCommand:phoenixOps.signInCopilotCli",
+    "onCommand:phoenixOps.geminiSignIn",
+    "onCommand:phoenixOps.geminiSetApiKey",
     "onCommand:phoenixOps.pollinationsSignIn",
     "onCommand:phoenixOps.pollinationsSetApiKey",
     "onCommand:phoenixOps.configureSupervisorMode",
@@ -93,6 +95,14 @@
       {
         "command": "phoenixOps.signInCopilotCli",
         "title": "Phoenix Ops: Sign In to Copilot CLI"
+      },
+      {
+        "command": "phoenixOps.geminiSignIn",
+        "title": "Phoenix Ops: Gemini API Key Portal"
+      },
+      {
+        "command": "phoenixOps.geminiSetApiKey",
+        "title": "Phoenix Ops: Set Gemini API Key"
       },
       {
         "command": "phoenixOps.pollinationsSignIn",
@@ -324,6 +334,36 @@
           "default": "copilot",
           "description": "Path or command name used by supervisor for Copilot CLI launches."
         },
+        "phoenixOps.cliBootstrapOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically bootstrap local CLI runtime on extension startup (install/check/sign-in/PTY terminals)."
+        },
+        "phoenixOps.cliStartupSpawnPtyTerminals": {
+          "type": "boolean",
+          "default": true,
+          "description": "Spawn startup PTY terminal sessions for available local CLIs."
+        },
+        "phoenixOps.cliStartupAutoInstallMissing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Attempt to install missing Codex/Copilot CLI tools at startup using configured install commands."
+        },
+        "phoenixOps.cliStartupAutoSignIn": {
+          "type": "boolean",
+          "default": true,
+          "description": "If CLI auth is missing at startup, trigger sign-in flows automatically."
+        },
+        "phoenixOps.codexCliInstallCommand": {
+          "type": "string",
+          "default": "npm install -g @openai/codex",
+          "description": "Command used to install Codex CLI when unavailable during startup bootstrap."
+        },
+        "phoenixOps.copilotCliInstallCommand": {
+          "type": "string",
+          "default": "npm install -g @github/copilot",
+          "description": "Command used to install Copilot CLI when unavailable during startup bootstrap."
+        },
         "phoenixOps.codexDefaultModel": {
           "type": "string",
           "default": "",
@@ -512,8 +552,13 @@
     "verify": "npm run lint && npm run test && npm run compile",
     "package:vsix": "npx @vscode/vsce package"
   },
+  "dependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "ws": "^8.18.3"
+  },
   "devDependencies": {
     "@types/node": "^22.10.10",
+    "@types/ws": "^8.5.12",
     "@types/vscode": "^1.109.0",
     "@vscode/vsce": "^3.6.0",
     "typescript": "^5.7.3",

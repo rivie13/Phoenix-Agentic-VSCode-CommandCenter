@@ -28,6 +28,11 @@ export interface JarvisServiceSettings {
 export interface JarvisSpeechResult {
   audioBase64: string;
   mimeType: string;
+  provider: "gemini" | "pollinations";
+  mode: JarvisTtsProvider;
+  usedFallback: boolean;
+  geminiAttempted: boolean;
+  geminiError: string | null;
 }
 
 interface PollinationsChatResponse {
@@ -67,6 +72,8 @@ type JarvisTtsProvider = "gemini-with-fallback" | "gemini" | "pollinations";
 
 const DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts";
 const DEFAULT_GEMINI_TTS_VOICE = "Charon";
+const CHAT_REQUEST_TIMEOUT_MS = 75_000;
+const SPEECH_REQUEST_TIMEOUT_MS = 75_000;
 
 function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
@@ -109,7 +116,8 @@ function normalizeAudioBase64(value: string): string {
 }
 
 export class JarvisService {
-  private readonly timeoutMs = 15_000;
+  private readonly chatTimeoutMs = CHAT_REQUEST_TIMEOUT_MS;
+  private readonly speechTimeoutMs = SPEECH_REQUEST_TIMEOUT_MS;
 
   async generateReply(
     systemPrompt: string,
@@ -119,7 +127,7 @@ export class JarvisService {
   ): Promise<string> {
     const endpoint = `${this.resolvedBaseUrl(settings)}/v1/chat/completions`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), this.chatTimeoutMs);
 
     try {
       const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
@@ -161,6 +169,8 @@ export class JarvisService {
     const geminiModel = asNonEmptyString(settings.geminiModel) ?? DEFAULT_GEMINI_TTS_MODEL;
     const geminiVoice = asNonEmptyString(settings.geminiVoice) ?? DEFAULT_GEMINI_TTS_VOICE;
     const ttsDebug = Boolean(settings.ttsDebug);
+    let geminiAttempted = false;
+    let geminiError: string | null = null;
 
     if (provider !== "pollinations") {
       if (!geminiApiKey) {
@@ -170,16 +180,39 @@ export class JarvisService {
           );
         }
       } else {
+        geminiAttempted = true;
         try {
-          return await this.fetchGeminiSpeechAudio({
-            apiKey: geminiApiKey,
-            model: geminiModel,
-            voice: geminiVoice,
-            text,
-            styleInstructions,
-            debug: ttsDebug
-          });
+          const fetchGemini = async (): Promise<{ audioBase64: string; mimeType: string }> => {
+            return await this.fetchGeminiSpeechAudio({
+              apiKey: geminiApiKey,
+              model: geminiModel,
+              voice: geminiVoice,
+              text,
+              styleInstructions,
+              debug: ttsDebug
+            });
+          };
+
+          let geminiResult: { audioBase64: string; mimeType: string };
+          try {
+            geminiResult = await fetchGemini();
+          } catch (error) {
+            if (!this.looksLikeAbortTimeout(error)) {
+              throw error;
+            }
+            geminiResult = await fetchGemini();
+          }
+
+          return {
+            ...geminiResult,
+            provider: "gemini",
+            mode: provider,
+            usedFallback: false,
+            geminiAttempted,
+            geminiError: null
+          };
         } catch (error) {
+          geminiError = this.describeError(error);
           if (provider === "gemini") {
             throw error;
           }
@@ -193,23 +226,47 @@ export class JarvisService {
 
     const endpoint = `${this.resolvedBaseUrl(settings)}/v1/audio/speech`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), this.speechTimeoutMs);
 
     try {
       const configuredModel = asNonEmptyString(settings.speechModel) ?? "tts-1";
       try {
-        return await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, settings.apiKey, controller.signal);
+        const pollinationsResult = await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, settings.apiKey, controller.signal);
+        return {
+          ...pollinationsResult,
+          provider: "pollinations",
+          mode: provider,
+          usedFallback: geminiAttempted,
+          geminiAttempted,
+          geminiError
+        };
       } catch (error) {
         let normalized = this.toNormalizedError(error, endpoint, "speech");
         if (this.isTimeoutFailure(normalized)) {
           try {
-            return await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, settings.apiKey, controller.signal);
+            const retryResult = await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, settings.apiKey, controller.signal);
+            return {
+              ...retryResult,
+              provider: "pollinations",
+              mode: provider,
+              usedFallback: geminiAttempted,
+              geminiAttempted,
+              geminiError
+            };
           } catch (retryError) {
             normalized = this.toNormalizedError(retryError, endpoint, "speech");
           }
         }
         if (this.shouldRetryModel(normalized, configuredModel, "tts-1")) {
-          return await this.fetchSpeechAudio(endpoint, "tts-1", settings.voice, text, settings.apiKey, controller.signal);
+          const modelRetryResult = await this.fetchSpeechAudio(endpoint, "tts-1", settings.voice, text, settings.apiKey, controller.signal);
+          return {
+            ...modelRetryResult,
+            provider: "pollinations",
+            mode: provider,
+            usedFallback: geminiAttempted,
+            geminiAttempted,
+            geminiError
+          };
         }
         throw normalized;
       }
@@ -281,7 +338,7 @@ export class JarvisService {
     text: string,
     apiKey: string,
     signal: AbortSignal
-  ): Promise<JarvisSpeechResult> {
+  ): Promise<{ audioBase64: string; mimeType: string }> {
     let response: Response;
     try {
       response = await fetch(endpoint, {
@@ -343,10 +400,10 @@ export class JarvisService {
     text: string;
     styleInstructions: string;
     debug: boolean;
-  }): Promise<JarvisSpeechResult> {
+  }): Promise<{ audioBase64: string; mimeType: string }> {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(input.model)}:generateContent`;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), this.speechTimeoutMs);
     try {
       let response: Response;
       try {
@@ -485,7 +542,7 @@ export class JarvisService {
     };
   }
 
-  private normalizeGeminiAudio(inline: GeminiInlineAudioPart): JarvisSpeechResult {
+  private normalizeGeminiAudio(inline: GeminiInlineAudioPart): { audioBase64: string; mimeType: string } {
     const normalizedMime = (inline.mimeType ?? "").toLowerCase();
     const pcm = this.parsePcmMimeType(normalizedMime);
     if (!pcm) {
@@ -563,6 +620,16 @@ export class JarvisService {
       return error.message;
     }
     return String(error);
+  }
+
+  private looksLikeAbortTimeout(error: unknown): boolean {
+    const message = this.describeError(error).toLowerCase();
+    return (
+      message.includes("aborted") ||
+      message.includes("aborterror") ||
+      message.includes("timed out") ||
+      message.includes("timeout")
+    );
   }
 
   private buildHeaders(apiKey: string): Record<string, string> {

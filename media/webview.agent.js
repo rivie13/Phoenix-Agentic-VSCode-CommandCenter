@@ -1,3 +1,18 @@
+const SESSION_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function sessionActivityMs(session) {
+  return Math.max(
+    parseMs(session?.updatedAt) || 0,
+    parseMs(session?.lastHeartbeat) || 0,
+    parseMs(session?.startedAt) || 0
+  );
+}
+
+function isSessionRecent(session, nowMs = Date.now()) {
+  const activityMs = sessionActivityMs(session);
+  return activityMs > 0 && (nowMs - activityMs) <= SESSION_RECENT_WINDOW_MS;
+}
+
 function classifySession(session) {
   if (session.archived) return "archived";
   const status = String(session.status || "").toLowerCase();
@@ -9,13 +24,249 @@ function classifySession(session) {
   return "waiting";
 }
 
+function isJarvisActor(entry) {
+  if (!entry || typeof entry !== "object") {
+    return false;
+  }
+  const agentId = String(entry.agentId || "").trim().toLowerCase();
+  if (agentId.includes("jarvis")) {
+    return true;
+  }
+  const service = String(entry.service || "").trim().toLowerCase();
+  if (service === "jarvis") {
+    return true;
+  }
+  const mode = String(entry.mode || "").trim().toLowerCase();
+  if (mode === "jarvis") {
+    return true;
+  }
+  return false;
+}
+
+function listInteractiveSessions() {
+  return (state.snapshot?.agents?.sessions || []).filter((session) => !isJarvisActor(session));
+}
+
 function selectedSession() {
   if (!state.snapshot) return null;
   if (state.sessionLockId) {
-    return (state.snapshot.agents.sessions || []).find((s) => s.sessionId === state.sessionLockId) || null;
+    return listInteractiveSessions().find((session) => session.sessionId === state.sessionLockId) || null;
   }
   if (state.selected?.kind !== "session") return null;
-  return (state.snapshot.agents.sessions || []).find((s) => s.sessionId === state.selected.id) || null;
+  return listInteractiveSessions().find((session) => session.sessionId === state.selected.id) || null;
+}
+
+const terminalInstances = new Map();
+const MAX_TERMINAL_BUFFER_CHARS = 240000;
+
+function resolveTerminalConstructor() {
+  if (typeof window.Terminal === "function") {
+    return window.Terminal;
+  }
+  return null;
+}
+
+function readTerminalBuffer(sessionId) {
+  if (!sessionId) {
+    return "";
+  }
+  const raw = state.terminal?.buffers?.[sessionId];
+  return typeof raw === "string" ? raw : "";
+}
+
+function writeTerminalBuffer(sessionId, nextValue) {
+  if (!sessionId) {
+    return;
+  }
+  if (!state.terminal || typeof state.terminal !== "object") {
+    state.terminal = { buffers: {}, states: {}, attachedSessionId: null };
+  }
+  const text = String(nextValue || "");
+  state.terminal.buffers[sessionId] = text.length > MAX_TERMINAL_BUFFER_CHARS
+    ? text.slice(text.length - MAX_TERMINAL_BUFFER_CHARS)
+    : text;
+}
+
+function appendTerminalBuffer(sessionId, chunk) {
+  if (!sessionId || typeof chunk !== "string" || chunk.length === 0) {
+    return;
+  }
+  const current = readTerminalBuffer(sessionId);
+  writeTerminalBuffer(sessionId, current + chunk);
+}
+
+function terminalStatusText(sessionId) {
+  if (!sessionId) {
+    return "No active terminal session.";
+  }
+  const session = listInteractiveSessions().find((candidate) => candidate.sessionId === sessionId) || null;
+  const stateLabel = state.terminal?.states?.[sessionId] || "unavailable";
+  if (!session) {
+    return `Session ${sessionId} | ${stateLabel}`;
+  }
+  return `${session.agentId} | ${session.transport} | ${session.status} | terminal ${stateLabel}`;
+}
+
+function ensureTerminalInstance(sessionId, mount) {
+  const existing = terminalInstances.get(sessionId);
+  if (existing) {
+    return existing;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "agent-terminal-shell";
+  wrapper.dataset.sessionId = sessionId;
+  wrapper.style.display = "none";
+  mount.appendChild(wrapper);
+
+  const TerminalCtor = resolveTerminalConstructor();
+  if (!TerminalCtor) {
+    wrapper.textContent = "xterm.js unavailable in this webview session.";
+    const fallback = { terminal: null, wrapper, inputSubscription: null };
+    terminalInstances.set(sessionId, fallback);
+    return fallback;
+  }
+
+  const terminal = new TerminalCtor({
+    cursorBlink: true,
+    convertEol: false,
+    scrollback: 6000,
+    fontSize: 12,
+    fontFamily: "monospace"
+  });
+  terminal.open(wrapper);
+  terminal.write(readTerminalBuffer(sessionId));
+
+  const inputSubscription = terminal.onData((data) => {
+    if (state.terminal.attachedSessionId !== sessionId) {
+      return;
+    }
+    vscode.postMessage({
+      type: "agentTerminalInput",
+      sessionId,
+      data
+    });
+  });
+
+  const instance = { terminal, wrapper, inputSubscription };
+  terminalInstances.set(sessionId, instance);
+  return instance;
+}
+
+function cleanupTerminalInstances(activeSessionIds) {
+  Array.from(terminalInstances.keys()).forEach((sessionId) => {
+    if (activeSessionIds.has(sessionId)) {
+      return;
+    }
+
+    const instance = terminalInstances.get(sessionId);
+    if (!instance) {
+      return;
+    }
+    try {
+      instance.inputSubscription?.dispose?.();
+    } catch {
+      // No-op
+    }
+    try {
+      instance.terminal?.dispose?.();
+    } catch {
+      // No-op
+    }
+    try {
+      instance.wrapper?.remove?.();
+    } catch {
+      // No-op
+    }
+    terminalInstances.delete(sessionId);
+  });
+}
+
+function chooseTerminalSession() {
+  const selected = selectedSession();
+  if (selected?.sessionId) {
+    return selected.sessionId;
+  }
+  const first = listInteractiveSessions()[0] || null;
+  return first?.sessionId || null;
+}
+
+function renderTerminalPanel() {
+  const mount = byId("agentTerminalMount");
+  const meta = byId("agentTerminalMeta");
+  const section = byId("agentTerminalSection");
+  if (section instanceof HTMLDetailsElement) {
+    section.open = state.ui.terminalSectionOpen;
+  }
+  if (!mount || !meta) {
+    return;
+  }
+
+  const activeSessionIds = new Set(listInteractiveSessions().map((session) => session.sessionId));
+  cleanupTerminalInstances(activeSessionIds);
+
+  if (activeSessionIds.size === 0) {
+    mount.innerHTML = "";
+    mount.appendChild(emptyText("No interactive sessions available."));
+    state.terminal.attachedSessionId = null;
+    meta.textContent = "No active terminal session.";
+    return;
+  }
+
+  const sessionId = chooseTerminalSession();
+  if (!sessionId) {
+    return;
+  }
+
+  const instance = ensureTerminalInstance(sessionId, mount);
+  for (const [candidateSessionId, candidate] of terminalInstances.entries()) {
+    if (!candidate?.wrapper) {
+      continue;
+    }
+    candidate.wrapper.style.display = candidateSessionId === sessionId ? "block" : "none";
+  }
+
+  state.terminal.attachedSessionId = sessionId;
+  meta.textContent = terminalStatusText(sessionId);
+  if (instance?.terminal?.focus) {
+    instance.terminal.focus();
+  }
+}
+
+function handleTerminalChunkPayload(payload) {
+  const sessionId = typeof payload?.sessionId === "string" ? payload.sessionId : "";
+  const data = typeof payload?.data === "string" ? payload.data : "";
+  if (!sessionId || !data) {
+    return;
+  }
+
+  appendTerminalBuffer(sessionId, data);
+  const instance = terminalInstances.get(sessionId);
+  if (instance?.terminal) {
+    instance.terminal.write(data);
+  }
+
+  if (state.terminal.attachedSessionId === sessionId) {
+    const meta = byId("agentTerminalMeta");
+    if (meta) {
+      meta.textContent = terminalStatusText(sessionId);
+    }
+  }
+}
+
+function handleTerminalStatePayload(payload) {
+  const sessionId = typeof payload?.sessionId === "string" ? payload.sessionId : "";
+  if (!sessionId) {
+    return;
+  }
+  const nextState = typeof payload?.state === "string" ? payload.state : "connected";
+  state.terminal.states[sessionId] = nextState;
+  if (state.terminal.attachedSessionId === sessionId) {
+    const meta = byId("agentTerminalMeta");
+    if (meta) {
+      meta.textContent = terminalStatusText(sessionId);
+    }
+  }
 }
 
 function syncSelectedSessionFromSnapshot() {
@@ -23,7 +274,7 @@ function syncSelectedSessionFromSnapshot() {
     return;
   }
 
-  const sessions = [...(state.snapshot.agents.sessions || [])]
+  const sessions = [...listInteractiveSessions()]
     .sort((a, b) => (parseMs(b.updatedAt) || 0) - (parseMs(a.updatedAt) || 0));
 
   if (state.sessionLockId) {
@@ -473,6 +724,7 @@ function renderSessions() {
   const root = byId("agentSessions");
   const counts = byId("sessionCounts");
   const showArchived = byId("showArchivedSessions");
+  const showOlder = byId("showOlderSessions");
   if (!root || !counts) {
     return;
   }
@@ -480,28 +732,46 @@ function renderSessions() {
   if (showArchived instanceof HTMLInputElement) {
     showArchived.checked = state.showArchived;
   }
-  const sessions = [...(state.snapshot?.agents?.sessions || [])].sort((a, b) => (parseMs(b.updatedAt) || 0) - (parseMs(a.updatedAt) || 0));
+  if (showOlder instanceof HTMLInputElement) {
+    showOlder.checked = state.showOlderSessions;
+  }
+
+  const nowMs = Date.now();
+  const sessions = [...listInteractiveSessions()].sort((a, b) => (parseMs(b.updatedAt) || 0) - (parseMs(a.updatedAt) || 0));
   if (state.sessionLockId && !state.selected) {
     state.selected = { kind: "session", id: state.sessionLockId };
   }
-  const pendingApprovals = (state.snapshot?.agents?.pendingCommands || []).filter((c) => c.status === "pending");
-  const archived = sessions.filter((s) => s.archived);
+  const pendingApprovals = (state.snapshot?.agents?.pendingCommands || [])
+    .filter((command) => command.status === "pending")
+    .filter((command) => !isJarvisActor(command));
+  const recentSessions = sessions.filter((session) => isSessionRecent(session, nowMs));
+  const olderSessions = sessions.filter((session) => !isSessionRecent(session, nowMs));
   const scoped = state.sessionLockId ? sessions.filter((s) => s.sessionId === state.sessionLockId) : sessions;
-  const visible = state.showArchived ? scoped : scoped.filter((s) => !s.archived);
+  const scopedRecent = scoped.filter((session) => isSessionRecent(session, nowMs));
+  const scopedOlder = scoped.filter((session) => !isSessionRecent(session, nowMs));
+  const windowed = (state.showOlderSessions || state.sessionLockId) ? scoped : scopedRecent;
+  const archived = windowed.filter((s) => s.archived);
+  const visible = state.showArchived ? windowed : windowed.filter((s) => !s.archived);
   const pinned = visible.filter((s) => s.pinned && !s.archived);
   const active = visible.filter((s) => !s.pinned && classifySession(s) === "active");
   const waiting = visible.filter((s) => !s.pinned && classifySession(s) === "waiting");
   const attention = visible.filter((s) => !s.pinned && classifySession(s) === "attention");
   const offline = visible.filter((s) => !s.pinned && classifySession(s) === "offline");
 
-  counts.textContent = `Sessions ${sessions.length} | Pinned ${pinned.length} | Archived ${archived.length} | Pending ${pendingApprovals.length}`;
+  counts.textContent =
+    `Sessions ${sessions.length} | Last 24h ${recentSessions.length} | Older ${olderSessions.length} | ` +
+    `Pinned ${pinned.length} | Archived ${archived.length} | Pending ${pendingApprovals.length}`;
 
+  if (!sessions.length) {
+    root.appendChild(emptyText("No sessions reported by supervisor."));
+    return;
+  }
   if (!scoped.length) {
     root.appendChild(emptyText("Locked session is not currently active."));
     return;
   }
-  if (!sessions.length) {
-    root.appendChild(emptyText("No sessions reported by supervisor."));
+  if (!windowed.length && !state.showOlderSessions && scopedOlder.length > 0) {
+    root.appendChild(emptyText("No sessions in the last 24h. Enable 'Show older than 24h' to view older sessions."));
     return;
   }
   if (pinned.length) renderSessionBucket(root, "Pinned", pinned);
@@ -544,6 +814,53 @@ function renderFeed() {
     row.appendChild(textLine(`${formatTime(entry.occurredAt)} | ${entry.transport} | ${entry.agentId}`));
     row.appendChild(textLine(entry.message, "feed-text"));
     root.appendChild(row);
+  });
+}
+
+function renderJarvisSupervisorSection() {
+  const jarvisSection = byId("agentJarvisSection");
+  const jarvisMeta = byId("jarvisSectionMeta");
+  const jarvisFeedRoot = byId("jarvisFeed");
+
+  if (jarvisSection instanceof HTMLDetailsElement) {
+    jarvisSection.open = state.ui.jarvisSectionOpen;
+  }
+
+  const dedicatedJarvisFeed = Array.isArray(state.snapshot?.jarvis?.feed)
+    ? state.snapshot.jarvis.feed
+    : [];
+  const fallbackJarvisFeed = (state.snapshot?.agents?.feed || []).filter((entry) => isJarvisFeedEntry(entry));
+  const jarvisFeed = (dedicatedJarvisFeed.length ? dedicatedJarvisFeed : fallbackJarvisFeed)
+    .slice()
+    .sort((a, b) => (parseMs(b.occurredAt) || 0) - (parseMs(a.occurredAt) || 0));
+
+  if (jarvisMeta) {
+    const mode = !state.jarvis.enabled
+      ? "disabled"
+      : (state.jarvis.manualMode ? "manual" : "auto");
+    const apiHealth = state.jarvis.chatDegraded || state.jarvis.speechDegraded
+      ? "API degraded"
+      : "API healthy";
+    jarvisMeta.textContent = `Mode: ${mode} | ${apiHealth} | Feed ${jarvisFeed.length}`;
+  }
+
+  if (!jarvisFeedRoot) {
+    return;
+  }
+
+  jarvisFeedRoot.innerHTML = "";
+  if (!jarvisFeed.length) {
+    jarvisFeedRoot.appendChild(emptyText("No Jarvis supervisor events."));
+    return;
+  }
+
+  jarvisFeed.slice(0, 60).forEach((entry) => {
+    const row = document.createElement("div");
+    row.className = `feed-row ${entry.level || "info"}`;
+    const source = String(entry.agentId || entry.service || "jarvis").trim() || "jarvis";
+    row.appendChild(textLine(`${formatTime(entry.occurredAt)} | ${source}`));
+    row.appendChild(textLine(String(entry.message || ""), "feed-text"));
+    jarvisFeedRoot.appendChild(row);
   });
 }
 
@@ -651,14 +968,28 @@ function renderControlMeta() {
   const statsMeta = byId("chatSessionStats");
   const session = selectedSession();
   const stats = computeSessionStats(session);
+  const codexMeta = formatCliAuthMeta("Codex", state.auth?.codex);
+  const copilotMeta = formatCliAuthMeta("Copilot", state.auth?.copilot);
+  const authMeta = `${codexMeta} | ${copilotMeta}`;
   if (meta) {
     meta.textContent = session
-      ? `Selected: ${session.agentId} (${session.sessionId}) | ${session.transport} | ${session.status} | Continues ${stats?.continues ?? 0} | Chats ${stats?.chatMessages ?? 0}`
-      : "No session selected.";
+      ? `Selected: ${session.agentId} (${session.sessionId}) | ${session.transport} | ${session.status} | Continues ${stats?.continues ?? 0} | Chats ${stats?.chatMessages ?? 0} | ${authMeta}`
+      : `No session selected. ${authMeta}`;
   }
   if (statsMeta) {
     statsMeta.textContent = formatSessionStats(stats);
   }
+}
+
+function formatReasoningEffortLabel(effort) {
+  const normalized = String(effort || "").trim().toLowerCase();
+  if (!normalized) {
+    return "Model default";
+  }
+  if (normalized === "xhigh") {
+    return "Extra High";
+  }
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
 function renderChatComposerLayout() {
@@ -669,6 +1000,7 @@ function renderChatComposerLayout() {
   const modeSelect = byId("composerModeSelect");
   const serviceSelect = byId("composerServiceSelect");
   const modelSelect = byId("composerModelSelect");
+  const effortSelect = byId("composerEffortSelect");
   const toolSelect = byId("composerToolSelect");
   const mcpToolsSelect = byId("composerMcpToolsSelect");
   const cloudControls = byId("composerCloudControls");
@@ -712,6 +1044,34 @@ function renderChatComposerLayout() {
       state.compose.model = models[0].id;
     }
     modelSelect.value = state.compose.model;
+  }
+  if (effortSelect instanceof HTMLSelectElement) {
+    const selectedModel = selectedModelInfo();
+    const supportedEfforts = Array.isArray(selectedModel?.reasoningEfforts) ? selectedModel.reasoningEfforts : [];
+    effortSelect.innerHTML = "";
+    if (supportedEfforts.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "Reasoning: model default";
+      effortSelect.appendChild(option);
+      effortSelect.value = "";
+      effortSelect.disabled = true;
+    } else {
+      effortSelect.disabled = false;
+      supportedEfforts.forEach((effort) => {
+        const option = document.createElement("option");
+        option.value = effort;
+        option.textContent = `Reasoning: ${formatReasoningEffortLabel(effort)}`;
+        effortSelect.appendChild(option);
+      });
+      const defaultEffort = selectedModel?.defaultReasoningEffort && supportedEfforts.includes(selectedModel.defaultReasoningEffort)
+        ? selectedModel.defaultReasoningEffort
+        : supportedEfforts[0];
+      if (!supportedEfforts.includes(state.compose.effort)) {
+        state.compose.effort = defaultEffort;
+      }
+      effortSelect.value = state.compose.effort;
+    }
   }
   if (toolSelect instanceof HTMLSelectElement) {
     toolSelect.value = state.compose.tool;
@@ -772,6 +1132,7 @@ function refreshComposerSelectionState() {
   const modeSelect = byId("composerModeSelect");
   const serviceSelect = byId("composerServiceSelect");
   const modelSelect = byId("composerModelSelect");
+  const effortSelect = byId("composerEffortSelect");
   const toolSelect = byId("composerToolSelect");
   const mcpToolsSelect = byId("composerMcpToolsSelect");
   const issueNumberInput = byId("composerIssueNumberInput");
@@ -792,6 +1153,9 @@ function refreshComposerSelectionState() {
     if (getModelsForService(state.compose.service).some((model) => model.id === modelValue)) {
       state.compose.model = modelValue;
     }
+  }
+  if (effortSelect instanceof HTMLSelectElement) {
+    state.compose.effort = effortSelect.disabled ? "" : String(effortSelect.value || "").trim().toLowerCase();
   }
   if (toolSelect instanceof HTMLSelectElement) {
     state.compose.tool = toolSelect.value;
@@ -814,6 +1178,8 @@ function refreshComposerSelectionState() {
 function renderAgentLayout() {
   const right = byId("rightAgentPane");
   const sessionsSection = byId("agentSessionsSection");
+  const jarvisSection = byId("agentJarvisSection");
+  const terminalSection = byId("agentTerminalSection");
   const chatSection = byId("agentChatSection");
   const composerSection = byId("agentComposerSection");
 
@@ -830,6 +1196,12 @@ function renderAgentLayout() {
 
   if (sessionsSection instanceof HTMLDetailsElement) {
     sessionsSection.open = state.ui.sessionsSectionOpen;
+  }
+  if (jarvisSection instanceof HTMLDetailsElement) {
+    jarvisSection.open = state.ui.jarvisSectionOpen;
+  }
+  if (terminalSection instanceof HTMLDetailsElement) {
+    terminalSection.open = state.ui.terminalSectionOpen;
   }
   if (chatSection instanceof HTMLDetailsElement) {
     chatSection.open = state.ui.chatSectionOpen;
@@ -1023,8 +1395,9 @@ function sendMessage() {
 
   const modePrefix = state.compose.mode === "agent" ? "" : `[${state.compose.mode}] `;
   const servicePrefix = `[${state.compose.service}] `;
+  const effortPrefix = state.compose.effort ? `[reasoning:${state.compose.effort}] ` : "";
   const modelSuffix = modelInfo ? ` [model:${modelInfo.label}]` : "";
-  const outboundMessage = `${servicePrefix}${modePrefix}${message}${modelSuffix}`.trim();
+  const outboundMessage = `${servicePrefix}${modePrefix}${effortPrefix}${message}${modelSuffix}`.trim();
   const selectedMcpTools = sanitizeToolIds(state.compose.mcpTools);
 
   if (session) {
@@ -1037,6 +1410,7 @@ function sendMessage() {
       service: state.compose.service,
       mode: state.compose.mode,
       model: modelInfo?.id || state.compose.model,
+      effort: state.compose.effort || null,
       toolProfile: state.compose.tool,
       mcpTools: selectedMcpTools,
       contextItems: state.contextItems
@@ -1083,6 +1457,7 @@ function sendMessage() {
       service: state.compose.service,
       mode: state.compose.mode,
       model: modelInfo?.id || state.compose.model,
+      effort: state.compose.effort || null,
       toolProfile: state.compose.tool,
       mcpTools: selectedMcpTools,
       repository,

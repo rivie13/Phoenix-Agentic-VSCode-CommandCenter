@@ -4,6 +4,7 @@ import type {
   AgentCommandDecisionPayload,
   AgentDispatchPayload,
   AgentMessagePayload,
+  AgentTerminalInputPayload,
   AgentStopPayload,
   CommentPullRequestFromViewPayload,
   CreateIssueFromViewPayload,
@@ -51,6 +52,7 @@ interface WebviewMessageRouterContext {
   dispatchAgent: (payload: AgentDispatchPayload) => Promise<void>;
   resolvePendingCommand: (payload: AgentCommandDecisionPayload) => Promise<void>;
   stopAgent: (payload: AgentStopPayload) => Promise<void>;
+  sendAgentTerminalInput: (payload: AgentTerminalInputPayload) => Promise<void>;
   addActiveFileContext: (sourceWebview?: vscode.Webview) => Promise<void>;
   addSelectionContext: (sourceWebview?: vscode.Webview) => Promise<void>;
   addWorkspaceFileContext: (sourceWebview?: vscode.Webview) => Promise<void>;
@@ -307,6 +309,11 @@ export async function routeWebviewMessage(
 
   if (type === "agentStop") {
     await ctx.stopAgent(message as unknown as AgentStopPayload);
+    return;
+  }
+
+  if (type === "agentTerminalInput") {
+    await ctx.sendAgentTerminalInput(message as unknown as AgentTerminalInputPayload);
     return;
   }
 

@@ -2,6 +2,12 @@
 
 Step-by-step developer guide for wiring Gemini TTS (primary) + Pollinations fallback into Command Center.
 
+## Current Runtime Notes (Implemented)
+
+- Startup greeting now uses extension-local snapshot facts (current Command Center context) rather than supervisor `/jarvis/respond` generation.
+- Jarvis session memory is persisted per VS Code session in extension global storage (`phoenix-jarvis-session-memory.json`).
+- Cross-session carryover is bounded to a small summary window (last few sessions) to keep Jarvis meta-memory lightweight and ephemeral.
+
 ---
 
 ## Prerequisites

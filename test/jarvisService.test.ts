@@ -148,6 +148,48 @@ describe("JarvisService pollinations resilience", () => {
     );
   });
 
+  it("retries Gemini TTS once on abort timeout", async () => {
+    const abortError = new DOMException("This operation was aborted", "AbortError");
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(abortError)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      inlineData: {
+                        data: "QUJD",
+                        mimeType: "audio/wav"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new JarvisService();
+
+    const speech = await service.synthesizeSpeech("hello", {
+      ...settings,
+      ttsProvider: "gemini",
+      geminiApiKey: "gemini-key",
+      geminiModel: "gemini-2.5-flash-preview-tts",
+      geminiVoice: "Charon"
+    });
+
+    expect(speech.provider).toBe("gemini");
+    expect(speech.audioBase64).toBe("QUJD");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("falls back to Pollinations TTS when Gemini fails in gemini-with-fallback mode", async () => {
     const calls: Array<{ url: unknown; body: Record<string, unknown> | null }> = [];
     const fetchMock = vi.fn().mockImplementation(async (input: unknown, init?: RequestInit) => {

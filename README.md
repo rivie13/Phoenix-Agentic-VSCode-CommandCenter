@@ -19,6 +19,7 @@ Local-first VS Code extension for GitHub Projects + Actions visibility, supervis
 - Actions triage buckets (`Queued`, `In Progress`, `Needs Attention`)
 - Right-side **Agent Workspace** panel for focused agent operations
 - Agent sessions panel (CLI/local/cloud heartbeat + status)
+- Interactive per-session PTY terminal panel powered by xterm.js
 - Session pin/unpin and archive/restore for focused tracking
 - Stop running sessions directly from the agent chat/composer controls
 - Open agent sessions as editor tabs for parallel monitoring
@@ -119,6 +120,12 @@ After install, set these values for your environment:
 - `phoenixOps.copilotCliAuthCommand` (terminal command used for Copilot CLI auth)
 - `phoenixOps.codexCliPath` (Codex CLI command/path surfaced for supervisor runtime alignment)
 - `phoenixOps.copilotCliPath` (Copilot CLI command/path surfaced for supervisor runtime alignment)
+- `phoenixOps.cliBootstrapOnStartup` (auto bootstrap CLI runtime at extension startup)
+- `phoenixOps.cliStartupSpawnPtyTerminals` (spawn startup PTY terminal sessions for available CLIs)
+- `phoenixOps.cliStartupAutoInstallMissing` (attempt CLI install when unavailable)
+- `phoenixOps.cliStartupAutoSignIn` (trigger sign-in when CLI auth is missing)
+- `phoenixOps.codexCliInstallCommand` (startup install command for Codex CLI)
+- `phoenixOps.copilotCliInstallCommand` (startup install command for Copilot CLI)
 - `phoenixOps.codexDefaultModel` (optional default Codex model for dispatch)
 - `phoenixOps.copilotDefaultModel` (optional default Copilot model for dispatch)
 - `phoenixOps.copilotCloudEnabled` (enable/disable Copilot cloud issue dispatch warnings + validation)
@@ -166,6 +173,8 @@ When `phoenixOps.repositories` is empty:
 - `Phoenix Ops: Sign In to GitHub`
 - `Phoenix Ops: Sign In to Codex CLI`
 - `Phoenix Ops: Sign In to Copilot CLI`
+- `Phoenix Ops: Gemini API Key Portal`
+- `Phoenix Ops: Set Gemini API Key`
 - `Phoenix Ops: Pollinations Sign Up / Sign In`
 - `Phoenix Ops: Set Pollinations API Key`
 - `Phoenix Ops: Configure Supervisor Mode`
@@ -193,7 +202,10 @@ Keyboard shortcuts:
 Jarvis startup + wake word:
 
 - On extension activation, Jarvis posts a startup greeting.
-- Use topbar `Supervisor Mode`, `Voice Model`, and `Model Hub` buttons to configure control-plane routing, Pollinations voice model/voice ID, and dynamic composer model catalogs without hand-editing settings JSON.
+- Startup greeting is derived from Command Center's live filtered snapshot (extension context), not supervisor cached `/jarvis/respond` context.
+- Jarvis keeps per-VSCode-session memory in extension global storage (`phoenix-jarvis-session-memory.json`), including ordered user/Jarvis turns and a compact session summary.
+- Cross-session carryover is intentionally light: startup may include only the last few completed session summaries (currently 3).
+- Use topbar `Supervisor Mode`, `Jarvis TTS`, `Set Gemini Key`, and `Model Hub` buttons to configure control-plane routing, Gemini/Pollinations speech settings, API keys, and dynamic composer model catalogs without hand-editing settings JSON.
 - Use topbar `Wake Word: On` to enable local mic wake-word detection (`jarvis`, `hey jarvis`, `okay jarvis`) when browser speech recognition is available and mic access is allowed.
 - Jarvis now builds Pollinations text prompts from prioritized session highlights, pending approvals, PR review pressure, and recent session feed excerpts before any voice call.
 - Speech generation is a second step that voices the generated text summary (or local fallback summary when degraded).

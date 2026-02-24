@@ -44,7 +44,7 @@ The webview now loads multiple scripts in a fixed order to keep each concern iso
 - `src/controller/agentRuntimeHandlers.ts`
   - Agent dispatch/message/stop/approval writes and context attachment flows.
 - `src/controller/jarvisSupervisorHandlers.ts`
-  - Workspace supervisor Jarvis `/jarvis/respond` and `/jarvis/speak` integration flow.
+  - Workspace supervisor Jarvis `/jarvis/respond` and `/jarvis/speak` integration flow for manual/auto responses.
 - `src/controller/jarvisInteractionHandlers.ts`
   - Jarvis activation and auto-announcement decision/response flow.
 - `src/controller/jarvisDelegatedApprovalHandler.ts`
@@ -69,6 +69,15 @@ The webview now loads multiple scripts in a fixed order to keep each concern iso
   - Agent model catalog normalization and hub payload coercion.
 - `src/utils/jarvisPrompts.ts`
   - Jarvis auto-decision logic and prompt/fallback composition helpers.
+- `src/utils/jarvisSessionMemory.ts`
+  - VS Code-session-scoped Jarvis memory persistence, startup greeting composition, and bounded cross-session summary carryover.
+
+## Jarvis Startup Context & Memory
+
+- Startup greeting is generated in extension host from the current filtered snapshot (24h actions window + current VS Code session feed scope), not from supervisor `/jarvis/respond`.
+- Jarvis conversation turns are persisted per VS Code session to extension global storage (`phoenix-jarvis-session-memory.json`).
+- Each stored session includes ordered user/assistant turns, compact deterministic summary, and snapshot facts at persistence time.
+- New sessions are ephemeral by default, with bounded carryover from only the last few completed sessions (currently 3 summaries).
 
 ## Message Flow
 

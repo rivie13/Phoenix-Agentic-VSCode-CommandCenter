@@ -2,14 +2,20 @@ function bindEvents() {
   const signInButton = byId("signInButton");
   const signInCodexButton = byId("signInCodexButton");
   const signInCopilotButton = byId("signInCopilotButton");
+  const geminiSignInButton = byId("geminiSignInButton");
+  const geminiApiKeyButton = byId("geminiApiKeyButton");
   const pollinationsSignInButton = byId("pollinationsSignInButton");
   const pollinationsApiKeyButton = byId("pollinationsApiKeyButton");
   const configureSupervisorButton = byId("configureSupervisorButton");
   const configureJarvisVoiceButton = byId("configureJarvisVoiceButton");
+  const configureJarvisVoiceButtonHub = byId("configureJarvisVoiceButtonHub");
   const configureModelHubButton = byId("configureModelHubButton");
   const jarvisCallButton = byId("jarvisCallButton");
+  const jarvisCallButtonHub = byId("jarvisCallButtonHub");
   const jarvisModeButton = byId("jarvisModeButton");
+  const jarvisModeButtonHub = byId("jarvisModeButtonHub");
   const jarvisWakeButton = byId("jarvisWakeButton");
+  const jarvisWakeButtonHub = byId("jarvisWakeButtonHub");
   const openAgentWorkspacePanelButton = byId("openAgentWorkspacePanelButton");
   const refreshButton = byId("refreshButton");
   const openPullRequestsTabFromOpsButton = byId("openPullRequestsTabFromOps");
@@ -78,6 +84,8 @@ function bindEvents() {
   const collapseAllPullRequestsButton = byId("collapseAllPullRequests");
   const expandAllPullRequestsButton = byId("expandAllPullRequests");
   const agentSessionsSection = byId("agentSessionsSection");
+  const agentJarvisSection = byId("agentJarvisSection");
+  const agentTerminalSection = byId("agentTerminalSection");
   const agentChatSection = byId("agentChatSection");
   const agentComposerSection = byId("agentComposerSection");
   const toggleContextPickerButton = byId("toggleContextPickerButton");
@@ -85,6 +93,7 @@ function bindEvents() {
   const composerModeSelect = byId("composerModeSelect");
   const composerServiceSelect = byId("composerServiceSelect");
   const composerModelSelect = byId("composerModelSelect");
+  const composerEffortSelect = byId("composerEffortSelect");
   const composerToolSelect = byId("composerToolSelect");
   const composerMcpToolsSelect = byId("composerMcpToolsSelect");
   const composerIssueNumberInput = byId("composerIssueNumberInput");
@@ -97,6 +106,7 @@ function bindEvents() {
   const collapseAllSessionsButton = byId("collapseAllSessions");
   const expandAllSessionsButton = byId("expandAllSessions");
   const showArchivedSessions = byId("showArchivedSessions");
+  const showOlderSessions = byId("showOlderSessions");
   const addContextFileButton = byId("addContextFileButton");
   const addContextSelectionButton = byId("addContextSelectionButton");
   const addContextWorkspaceFileButton = byId("addContextWorkspaceFileButton");
@@ -107,38 +117,57 @@ function bindEvents() {
   if (signInButton) signInButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.signIn" }));
   if (signInCodexButton) signInCodexButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.signInCodexCli" }));
   if (signInCopilotButton) signInCopilotButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.signInCopilotCli" }));
+  if (geminiSignInButton) geminiSignInButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.geminiSignIn" }));
+  if (geminiApiKeyButton) geminiApiKeyButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.geminiSetApiKey" }));
   if (pollinationsSignInButton) pollinationsSignInButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.pollinationsSignIn" }));
   if (pollinationsApiKeyButton) pollinationsApiKeyButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.pollinationsSetApiKey" }));
   if (configureSupervisorButton) configureSupervisorButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.configureSupervisorMode" }));
   if (configureJarvisVoiceButton) configureJarvisVoiceButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.configureJarvisVoice" }));
+  if (configureJarvisVoiceButtonHub) configureJarvisVoiceButtonHub.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.configureJarvisVoice" }));
   if (configureModelHubButton) configureModelHubButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.configureModelHub" }));
-  if (jarvisCallButton) {
-    jarvisCallButton.addEventListener("click", () => {
-      if (typeof window.prompt !== "function") {
-        vscode.postMessage({ type: "command", command: "phoenixOps.jarvisActivate" });
-        return;
-      }
 
-      let prompt = null;
-      try {
-        prompt = window.prompt("Ask Jarvis", "What is going on across sessions right now?");
-      } catch {
-        prompt = null;
-      }
-      if (typeof prompt !== "string") {
-        vscode.postMessage({ type: "command", command: "phoenixOps.jarvisActivate" });
-        return;
-      }
-      vscode.postMessage({ type: "jarvisActivate", prompt: prompt.trim() });
-    });
+  const activateJarvisFromButton = () => {
+    if (typeof window.prompt !== "function") {
+      vscode.postMessage({ type: "command", command: "phoenixOps.jarvisActivate" });
+      return;
+    }
+
+    let prompt = null;
+    try {
+      prompt = window.prompt("Ask Jarvis", "What is going on across sessions right now?");
+    } catch {
+      prompt = null;
+    }
+    if (typeof prompt !== "string") {
+      vscode.postMessage({ type: "command", command: "phoenixOps.jarvisActivate" });
+      return;
+    }
+    vscode.postMessage({ type: "jarvisActivate", prompt: prompt.trim() });
+  };
+
+  if (jarvisCallButton) {
+    jarvisCallButton.addEventListener("click", activateJarvisFromButton);
+  }
+  if (jarvisCallButtonHub) {
+    jarvisCallButtonHub.addEventListener("click", activateJarvisFromButton);
   }
   if (jarvisModeButton) {
     jarvisModeButton.addEventListener("click", () => {
       vscode.postMessage({ type: "jarvisToggleManualMode" });
     });
   }
+  if (jarvisModeButtonHub) {
+    jarvisModeButtonHub.addEventListener("click", () => {
+      vscode.postMessage({ type: "jarvisToggleManualMode" });
+    });
+  }
   if (jarvisWakeButton) {
     jarvisWakeButton.addEventListener("click", () => {
+      toggleWakeWordListening();
+    });
+  }
+  if (jarvisWakeButtonHub) {
+    jarvisWakeButtonHub.addEventListener("click", () => {
       toggleWakeWordListening();
     });
   }
@@ -556,6 +585,18 @@ function bindEvents() {
       persistUiState();
     });
   }
+  if (agentJarvisSection instanceof HTMLDetailsElement) {
+    agentJarvisSection.addEventListener("toggle", () => {
+      state.ui.jarvisSectionOpen = agentJarvisSection.open;
+      persistUiState();
+    });
+  }
+  if (agentTerminalSection instanceof HTMLDetailsElement) {
+    agentTerminalSection.addEventListener("toggle", () => {
+      state.ui.terminalSectionOpen = agentTerminalSection.open;
+      persistUiState();
+    });
+  }
   if (agentChatSection instanceof HTMLDetailsElement) {
     agentChatSection.addEventListener("toggle", () => {
       state.ui.chatSectionOpen = agentChatSection.open;
@@ -576,7 +617,7 @@ function bindEvents() {
     });
   }
 
-  [composerTransportSelect, composerModeSelect, composerServiceSelect, composerModelSelect, composerToolSelect, composerMcpToolsSelect].forEach((node) => {
+  [composerTransportSelect, composerModeSelect, composerServiceSelect, composerModelSelect, composerEffortSelect, composerToolSelect, composerMcpToolsSelect].forEach((node) => {
     if (!node) {
       return;
     }
@@ -630,6 +671,9 @@ function bindEvents() {
   }
   if (composerModelSelect instanceof HTMLSelectElement) {
     composerModelSelect.value = state.compose.model;
+  }
+  if (composerEffortSelect instanceof HTMLSelectElement) {
+    composerEffortSelect.value = state.compose.effort || "";
   }
   if (composerToolSelect instanceof HTMLSelectElement) {
     composerToolSelect.value = state.compose.tool;
@@ -703,6 +747,16 @@ function bindEvents() {
     const target = event.target;
     if (target instanceof HTMLInputElement) {
       state.showArchived = target.checked;
+      persistUiState();
+      renderSessions();
+    }
+  });
+
+  if (showOlderSessions) showOlderSessions.addEventListener("change", (event) => {
+    const target = event.target;
+    if (target instanceof HTMLInputElement) {
+      state.showOlderSessions = target.checked;
+      persistUiState();
       renderSessions();
     }
   });
@@ -756,8 +810,14 @@ window.addEventListener("message", (event) => {
     setStatus(message.payload.text, message.payload.level);
   }
   if (message.type === "auth") {
-    state.auth = { ok: Boolean(message.payload?.ok) };
+    const payload = message.payload || {};
+    state.auth.ok = Boolean(payload.ok);
+    state.auth.codex = normalizeCliAuthClientState(payload.codex, "codex");
+    state.auth.copilot = normalizeCliAuthClientState(payload.copilot, "copilot");
     renderAuth();
+    if (typeof renderControlMeta === "function") {
+      renderControlMeta();
+    }
     renderJarvisStatus();
   }
   if (message.type === "jarvisState") {
@@ -780,6 +840,12 @@ window.addEventListener("message", (event) => {
   }
   if (message.type === "jarvisSpeak") {
     handleJarvisSpeak(message.payload || {});
+  }
+  if (message.type === "agentTerminalChunk") {
+    handleTerminalChunkPayload(message.payload || {});
+  }
+  if (message.type === "agentTerminalState") {
+    handleTerminalStatePayload(message.payload || {});
   }
   if (message.type === "runtimeContext") {
     const payload = message.payload || {};

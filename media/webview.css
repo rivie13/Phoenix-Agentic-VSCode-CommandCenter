@@ -564,6 +564,26 @@ button:disabled {
   padding-right: 2px;
 }
 
+.agent-terminal-mount {
+  border: 1px solid color-mix(in srgb, var(--vscode-input-border) 75%, transparent 25%);
+  border-radius: 8px;
+  min-height: 180px;
+  height: clamp(220px, 36vh, 520px);
+  overflow: hidden;
+  background: color-mix(in srgb, var(--vscode-editor-background) 92%, #101820 8%);
+}
+
+.agent-terminal-shell {
+  width: 100%;
+  height: 100%;
+  padding: 6px;
+}
+
+.agent-terminal-shell .xterm {
+  width: 100%;
+  height: 100%;
+}
+
 .chat-composer {
   margin-top: 6px;
   border: 1px solid color-mix(in srgb, var(--vscode-input-border) 72%, transparent 28%);
@@ -843,6 +863,11 @@ body.agent-only #agentChatSection .chat-timeline {
     linear-gradient(155deg, color-mix(in srgb, var(--phoenix-surface) 86%, var(--phoenix-sky) 14%), color-mix(in srgb, var(--phoenix-surface-strong) 90%, var(--phoenix-lilac) 10%));
 }
 
+.jarvis-foldout {
+  background:
+    linear-gradient(155deg, color-mix(in srgb, var(--phoenix-surface) 86%, var(--phoenix-lilac) 14%), color-mix(in srgb, var(--phoenix-surface-strong) 90%, var(--phoenix-sky) 10%));
+}
+
 .chat-foldout {
   background:
     linear-gradient(155deg, color-mix(in srgb, var(--phoenix-surface) 87%, var(--phoenix-coral) 13%), color-mix(in srgb, var(--phoenix-surface-strong) 92%, var(--phoenix-sun) 8%));
@@ -1087,6 +1112,14 @@ body.agent-only #agentChatSection .chat-timeline {
   max-height: 320px;
   overflow: auto;
   padding-right: 2px;
+}
+
+#agentJarvisSection #jarvisHubStatus {
+  margin-top: 0;
+}
+
+#agentJarvisSection .inline-actions button {
+  flex: 1 1 108px;
 }
 
 .approvals-list {

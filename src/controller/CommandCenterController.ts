@@ -6,6 +6,8 @@ import type {
   AgentCommandDecisionPayload,
   AgentDispatchPayload,
   AgentMessagePayload,
+  AgentTerminalInputPayload,
+  AgentTerminalStreamPayload,
   AgentStopPayload,
   CommentPullRequestFromViewPayload,
   CreateIssueFromViewPayload,
@@ -72,7 +74,13 @@ import {
   requestJarvisRespondFromSupervisor as requestJarvisRespondFromSupervisorHandler
 } from "./jarvisSupervisorHandlers";
 import {
+  type CodexDeviceAuthPrompt,
+  createUnknownCliAuthStatus,
+  probeCliAuthStatus,
+  type CliAuthService,
+  type CliAuthStatus,
   resolveConfigTargetForKey,
+  runCodexDeviceAuthSignIn,
   runAuthCommandFromSetting,
   updatePhoenixSettings
 } from "./settingsAuthHandlers";
@@ -94,6 +102,7 @@ import {
   normalizePollinationsFailure
 } from "../services/PollinationsResilience";
 import { SupervisorStreamClient } from "../services/SupervisorStreamClient";
+import { SupervisorTerminalClient } from "../services/SupervisorTerminalClient";
 import {
   ActionRun,
   BoardItem,
@@ -103,6 +112,18 @@ import {
   StreamEnvelope
 } from "../types";
 import type { AgentModelCatalogPayload } from "../utils/agentModelCatalog";
+import {
+  buildJarvisSessionSnapshot,
+  buildJarvisSessionSummary,
+  buildJarvisStartupGreeting,
+  createJarvisSessionId,
+  createJarvisSessionMemoryStore,
+  listRecentJarvisSessionSummaries,
+  loadJarvisSessionMemory,
+  persistJarvisSessionMemory,
+  upsertJarvisSessionMemory,
+  type JarvisSessionMemoryStore
+} from "../utils/jarvisSessionMemory";
 import { buildJarvisTtsInstructions } from "../utils/jarvisPrompts";
 import type { JarvisIdentity, JarvisPersonalityMode } from "../utils/jarvisPrompts";
 import { readJarvisIdentityFromDisk, writeJarvisIdentityToDisk } from "../utils/jarvisIdentity";
@@ -116,6 +137,10 @@ const JARVIS_MANUAL_MODE_STORAGE_KEY = "phoenixOps.jarvisManualMode";
 const JARVIS_AUTO_LOOP_MS = 30_000;
 const ACTIONS_LOOKBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
 const JARVIS_AUDITION_PERSONALITIES: JarvisPersonalityMode[] = ["serene", "attentive", "alert", "escalating"];
+const JARVIS_SESSION_MEMORY_FILENAME = "phoenix-jarvis-session-memory.json";
+const JARVIS_SESSION_MEMORY_MAX_SESSIONS = 36;
+const JARVIS_SESSION_MEMORY_MAX_TURNS = 64;
+const JARVIS_STARTUP_PRIOR_SUMMARY_COUNT = 3;
 
 export class CommandCenterController implements vscode.Disposable {
   private readonly boardViewProvider: CommandCenterViewProvider;
@@ -136,6 +161,11 @@ export class CommandCenterController implements vscode.Disposable {
   private lastUpdatedMs = 0;
   private streamConnected = false;
   private ghAuthOk = false;
+  private cliAuthState: Record<CliAuthService, CliAuthStatus> = {
+    codex: createUnknownCliAuthStatus("codex"),
+    copilot: createUnknownCliAuthStatus("copilot")
+  };
+  private readonly cliAuthWatchTimers = new Map<CliAuthService, NodeJS.Timeout>();
   private disposed = false;
   private jarvisManualMode = false;
   private jarvisAutoTimer: NodeJS.Timeout | null = null;
@@ -154,10 +184,17 @@ export class CommandCenterController implements vscode.Disposable {
   private agentModelCatalogWarnedUntilMs = 0;
   private jarvisIdentity: JarvisIdentity | null = null;
   private readonly vscodeSessionStartedAtMs = Date.now();
+  private readonly vscodeSessionStartedAtIso = new Date(this.vscodeSessionStartedAtMs).toISOString();
+  private readonly jarvisSessionId = createJarvisSessionId(this.vscodeSessionStartedAtMs);
+  private readonly jarvisSessionMemoryFilePath: string;
+  private jarvisSessionMemory: JarvisSessionMemoryStore = createJarvisSessionMemoryStore();
   private pinnedSessionIds = new Set<string>();
   private archivedSessionIds = new Set<string>();
   private readonly sessionPanels = new Map<string, vscode.WebviewPanel>();
+  private readonly terminalClients = new Map<string, SupervisorTerminalClient>();
   private pendingBoardUiAction: PendingBoardUiAction | null = null;
+  private startupCliBootstrapInFlight = false;
+  private startupCliBootstrapDone = false;
 
   constructor(
     boardViewProvider: CommandCenterViewProvider,
@@ -173,6 +210,8 @@ export class CommandCenterController implements vscode.Disposable {
     this.jarvisService = new JarvisService();
     this.streamClient = new SupervisorStreamClient();
     this.context = context;
+    this.jarvisSessionMemoryFilePath = path.join(this.context.globalStorageUri.fsPath, JARVIS_SESSION_MEMORY_FILENAME);
+    this.jarvisSessionMemory = loadJarvisSessionMemory(this.jarvisSessionMemoryFilePath);
     this.output = vscode.window.createOutputChannel("Phoenix Ops Command Center");
     this.jarvisHostAudioPlayer = new JarvisHostAudioPlayer({
       info: (message: string) => this.logInfo(message),
@@ -189,6 +228,7 @@ export class CommandCenterController implements vscode.Disposable {
 
     const auth = await this.dataService.checkGhAuth();
     this.ghAuthOk = auth.ok;
+    await this.refreshCliAuthStatus(["codex", "copilot"]);
     await this.postAuthState();
     if (!auth.ok) {
       const signInChoice = await vscode.window.showWarningMessage(
@@ -219,6 +259,7 @@ export class CommandCenterController implements vscode.Disposable {
     await this.openAgentWorkspacePanel();
     await this.loadJarvisIdentity();
     await this.sendJarvisStartupGreeting();
+    void this.bootstrapCliRuntimeOnStartup();
     this.logInfo("Initialization complete.");
   }
 
@@ -256,19 +297,102 @@ export class CommandCenterController implements vscode.Disposable {
   }
 
   async signInCodexCliCommand(): Promise<void> {
-    await runAuthCommandFromSetting(
-      "codexCliAuthCommand",
-      ["codex login", "codex auth login"],
-      "Codex CLI"
-    );
+    const settings = this.getRuntimeSettings();
+    this.logInfo(`[auth:codex] sign-in requested cliPath=${settings.codexCliPath}`);
+    try {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "Phoenix Ops: Codex web sign-in",
+          cancellable: false
+        },
+        async (progress) => {
+          progress.report({ message: "Starting device authorization..." });
+
+          const onPromptDiscovered = async (prompt: CodexDeviceAuthPrompt): Promise<void> => {
+            progress.report({ message: "Browser authorization requested. Finish sign-in in your browser..." });
+            await vscode.env.openExternal(vscode.Uri.parse(prompt.verificationUrl));
+            const copyChoice = await vscode.window.showInformationMessage(
+              `Codex one-time code: ${prompt.userCode}`,
+              "Copy Code"
+            );
+            if (copyChoice === "Copy Code") {
+              await vscode.env.clipboard.writeText(prompt.userCode);
+              void vscode.window.showInformationMessage("Codex device code copied to clipboard.");
+            }
+          };
+
+          const result = await runCodexDeviceAuthSignIn(settings.codexCliPath, onPromptDiscovered, (line) => {
+            this.logInfo(`[auth:codex] ${line}`);
+          });
+          if (!result.ok) {
+            throw new Error(result.output || "Codex sign-in did not complete.");
+          }
+        }
+      );
+      this.logInfo("[auth:codex] sign-in flow finished successfully.");
+      void vscode.window.showInformationMessage("Codex sign-in complete.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logWarn(`[auth:codex] sign-in flow failed: ${message}`);
+      vscode.window.showErrorMessage(`Codex sign-in failed: ${message}`);
+    }
+
+    await this.watchCliAuthAfterSignIn("codex");
   }
 
   async signInCopilotCliCommand(): Promise<void> {
-    await runAuthCommandFromSetting(
+    this.logInfo("[auth:copilot] sign-in requested.");
+    const execution = await runAuthCommandFromSetting(
       "copilotCliAuthCommand",
       ["copilot login", "gh auth login --web"],
       "Copilot CLI"
     );
+    if (execution) {
+      this.logInfo(
+        `[auth:copilot] launched terminal='${execution.terminalName}' command='${execution.command}'`
+      );
+    } else {
+      this.logWarn("[auth:copilot] sign-in command did not launch.");
+    }
+    await this.watchCliAuthAfterSignIn("copilot");
+  }
+
+  async geminiSignInCommand(): Promise<void> {
+    await this.openUrl("https://aistudio.google.com/app/apikey");
+  }
+
+  async geminiSetApiKeyCommand(): Promise<void> {
+    const config = vscode.workspace.getConfiguration("phoenixOps");
+    const current = config.get<string>("jarvisGeminiApiKey", "");
+    const entered = await vscode.window.showInputBox({
+      title: "Gemini API Key",
+      prompt: "Paste your Gemini API key. Leave blank and confirm to clear it.",
+      value: current,
+      password: true,
+      ignoreFocusOut: true
+    });
+    if (entered === undefined) {
+      return;
+    }
+
+    const trimmed = entered.trim();
+    if (!trimmed) {
+      const clearChoice = await vscode.window.showWarningMessage(
+        "Clear the saved Gemini API key?",
+        { modal: true },
+        "Clear"
+      );
+      if (clearChoice !== "Clear") {
+        return;
+      }
+    }
+
+    const target = resolveConfigTargetForKey("jarvisGeminiApiKey");
+    await config.update("jarvisGeminiApiKey", trimmed, target);
+    await this.postJarvisState();
+    await this.postRuntimeContext();
+    vscode.window.showInformationMessage(trimmed ? "Gemini API key updated." : "Gemini API key cleared.");
   }
 
   async pollinationsSignInCommand(): Promise<void> {
@@ -320,9 +444,56 @@ export class CommandCenterController implements vscode.Disposable {
 
   async configureJarvisVoiceCommand(): Promise<void> {
     const settings = this.dataService.getSettings();
+    const providerChoice = await vscode.window.showQuickPick(
+      [
+        {
+          label: "Gemini",
+          description: "Gemini TTS only (recommended default)",
+          value: "gemini" as const
+        },
+        {
+          label: "Gemini + Pollinations Fallback",
+          description: "Try Gemini first and fall back to Pollinations on failure",
+          value: "gemini-with-fallback" as const
+        },
+        {
+          label: "Pollinations",
+          description: "Use Pollinations speech only",
+          value: "pollinations" as const
+        }
+      ],
+      {
+        title: "Jarvis TTS Provider",
+        placeHolder: "Select the speech provider strategy"
+      }
+    );
+    if (!providerChoice) {
+      return;
+    }
+
+    const enteredGeminiModel = await vscode.window.showInputBox({
+      title: "Gemini TTS Model",
+      prompt: "Gemini TTS model ID (for example: gemini-2.5-flash-preview-tts).",
+      value: settings.jarvisGeminiModel,
+      ignoreFocusOut: true
+    });
+    if (enteredGeminiModel === undefined) {
+      return;
+    }
+
+    const enteredGeminiVoice = await vscode.window.showInputBox({
+      title: "Gemini Voice",
+      prompt: "Gemini prebuilt voice name (for example: Charon).",
+      value: settings.jarvisGeminiVoice,
+      ignoreFocusOut: true
+    });
+    if (enteredGeminiVoice === undefined) {
+      return;
+    }
+
     const enteredSpeechModel = await vscode.window.showInputBox({
       title: "Jarvis Speech Model",
-      prompt: "Model ID for Pollinations /v1/audio/speech (for example: openai-audio, tts-1). Leave empty to auto-select.",
+      prompt: "Model ID for Pollinations /v1/audio/speech (used for Pollinations mode/fallback). Leave empty to auto-select.",
       value: settings.jarvisSpeechModel,
       ignoreFocusOut: true
     });
@@ -331,7 +502,7 @@ export class CommandCenterController implements vscode.Disposable {
     }
     const enteredVoice = await vscode.window.showInputBox({
       title: "Jarvis Voice ID",
-      prompt: "Voice ID sent to Pollinations speech API (for example: alloy, onyx, brian, etc.).",
+      prompt: "Voice ID sent to Pollinations speech API (for example: onyx, brian, etc.).",
       value: settings.jarvisVoice,
       ignoreFocusOut: true
     });
@@ -339,16 +510,50 @@ export class CommandCenterController implements vscode.Disposable {
       return;
     }
 
+    const debugChoice = await vscode.window.showQuickPick(
+      [
+        { label: "Off", description: "No extra TTS diagnostics", value: false },
+        { label: "On", description: "Verbose Gemini/fallback diagnostics", value: true }
+      ],
+      {
+        title: "Jarvis TTS Debug Logging",
+        placeHolder: "Choose whether to log detailed Jarvis TTS provider diagnostics"
+      }
+    );
+    if (!debugChoice) {
+      return;
+    }
+
     const speechModel = enteredSpeechModel.trim();
     const voice = enteredVoice.trim();
+    const geminiModel = enteredGeminiModel.trim();
+    const geminiVoice = enteredGeminiVoice.trim();
     await updatePhoenixSettings([
+      ["jarvisTtsProvider", providerChoice.value],
+      ["jarvisGeminiModel", geminiModel || "gemini-2.5-flash-preview-tts"],
+      ["jarvisGeminiVoice", geminiVoice || "Charon"],
       ["jarvisSpeechModel", speechModel],
-      ["jarvisVoice", voice || "onyx"]
+      ["jarvisVoice", voice || "onyx"],
+      ["jarvisTtsDebug", debugChoice.value]
     ]);
     this.invalidateAgentModelCatalogCache();
     await this.postJarvisState();
     await this.postRuntimeContext();
-    vscode.window.showInformationMessage("Jarvis voice settings updated.");
+    const geminiApiKey = vscode.workspace.getConfiguration("phoenixOps").get<string>("jarvisGeminiApiKey", "").trim();
+    if (providerChoice.value !== "pollinations" && !geminiApiKey) {
+      const action = await vscode.window.showWarningMessage(
+        "Jarvis TTS is set to Gemini, but no Gemini API key is configured.",
+        "Set Gemini Key",
+        "Open Gemini Key Portal"
+      );
+      if (action === "Set Gemini Key") {
+        await this.geminiSetApiKeyCommand();
+      } else if (action === "Open Gemini Key Portal") {
+        await this.geminiSignInCommand();
+      }
+      return;
+    }
+    vscode.window.showInformationMessage("Jarvis TTS settings updated.");
   }
 
   async configureAgentModelHubCommand(): Promise<void> {
@@ -608,6 +813,7 @@ export class CommandCenterController implements vscode.Disposable {
       resolvePendingCommand: async (payload: AgentCommandDecisionPayload) =>
         resolvePendingCommandHandler(this.agentRuntimeHandlersDeps(), payload),
       stopAgent: async (payload: AgentStopPayload) => stopAgentHandler(this.agentRuntimeHandlersDeps(), payload),
+      sendAgentTerminalInput: async (payload: AgentTerminalInputPayload) => this.sendAgentTerminalInput(payload),
       addActiveFileContext: async (sourceWebview?: vscode.Webview) =>
         addActiveFileContextHandler(this.agentRuntimeHandlersDeps(), sourceWebview),
       addSelectionContext: async (sourceWebview?: vscode.Webview) =>
@@ -1175,6 +1381,47 @@ export class CommandCenterController implements vscode.Disposable {
     if (this.jarvisConversation.length > maxMessages) {
       this.jarvisConversation.splice(0, this.jarvisConversation.length - maxMessages);
     }
+    this.persistJarvisSessionMemory(false);
+  }
+
+  private currentWorkspaceName(): string {
+    return vscode.workspace.name ?? "Phoenix Ops";
+  }
+
+  private currentJarvisSnapshotFacts() {
+    return buildJarvisSessionSnapshot(this.snapshot);
+  }
+
+  private currentJarvisSessionSummary(): string {
+    return buildJarvisSessionSummary({
+      workspaceName: this.currentWorkspaceName(),
+      snapshot: this.currentJarvisSnapshotFacts(),
+      turns: this.jarvisConversation
+    });
+  }
+
+  private persistJarvisSessionMemory(markEnded: boolean): void {
+    this.jarvisSessionMemory = upsertJarvisSessionMemory(
+      this.jarvisSessionMemory,
+      {
+        sessionId: this.jarvisSessionId,
+        workspaceName: this.currentWorkspaceName(),
+        startedAt: this.vscodeSessionStartedAtIso,
+        endedAt: markEnded ? new Date().toISOString() : null,
+        summary: this.currentJarvisSessionSummary(),
+        snapshot: this.currentJarvisSnapshotFacts(),
+        turns: this.jarvisConversation
+      },
+      {
+        maxSessions: JARVIS_SESSION_MEMORY_MAX_SESSIONS,
+        maxTurnsPerSession: JARVIS_SESSION_MEMORY_MAX_TURNS
+      }
+    );
+
+    const persisted = persistJarvisSessionMemory(this.jarvisSessionMemoryFilePath, this.jarvisSessionMemory);
+    if (!persisted) {
+      this.logWarn("Failed to persist Jarvis session memory to disk.");
+    }
   }
 
   private async activateJarvis(prompt: string): Promise<void> {
@@ -1230,28 +1477,24 @@ export class CommandCenterController implements vscode.Disposable {
       return;
     }
 
-    const workspaceName = vscode.workspace.name ?? "Phoenix Ops";
-    const identity = this.jarvisIdentity;
-    const nameClause = identity?.name ? `, ${identity.name}` : "";
-    const startupPrompt = identity?.name
-      ? `Give a concise British-accented startup greeting for ${workspaceName}, addressing ${identity.name} directly. Mention you are monitoring sessions, approvals, and workflows, and offer one next action.`
-      : `Give a concise startup voice greeting for ${workspaceName}. Mention that you are monitoring sessions, approvals, and workflows, and offer one next action.`;
-    this.logInfo("Sending Jarvis startup greeting through workspace supervisor.");
-    const fromSupervisor = await this.requestJarvisRespondFromSupervisor({
-      prompt: startupPrompt,
-      reason: "startup-greeting",
-      auto: false,
-      focusHint: null,
-      rememberPrompt: null,
-      warnOnFailure: true
+    this.persistJarvisSessionMemory(false);
+    const workspaceName = this.currentWorkspaceName();
+    const priorSummaries = listRecentJarvisSessionSummaries(
+      this.jarvisSessionMemory,
+      this.jarvisSessionId,
+      JARVIS_STARTUP_PRIOR_SUMMARY_COUNT
+    );
+    const greeting = buildJarvisStartupGreeting({
+      workspaceName,
+      operatorName: this.jarvisIdentity?.name ?? null,
+      snapshot: this.currentJarvisSnapshotFacts(),
+      priorSessionSummaries: priorSummaries
     });
-    if (fromSupervisor) {
-      this.logInfo("Jarvis startup greeting handled by workspace supervisor.");
-      return;
-    }
 
-    this.logWarn("Workspace supervisor startup greeting unavailable; falling back to local Jarvis runtime.");
-    const greeting = `Good day${nameClause}. Jarvis online for ${workspaceName}. I am monitoring sessions, approvals, and workflows — do ask whenever you need a full status briefing.`;
+    this.logInfo(
+      `Sending Jarvis startup greeting from extension snapshot (priorSessionSummaries=${priorSummaries.length}, sessionId=${this.jarvisSessionId}).`
+    );
+    this.rememberJarvisTurn("assistant", greeting, settings.jarvisConversationHistoryTurns);
     await this.emitJarvisSpeech({
       text: greeting,
       reason: "startup-greeting",
@@ -1362,17 +1605,54 @@ export class CommandCenterController implements vscode.Disposable {
     }
 
     const settings = this.getRuntimeSettings();
+    const jarvisServiceSettings = this.getJarvisServiceSettings(settings);
+    const geminiConfigured = jarvisServiceSettings.geminiApiKey.trim().length > 0;
     let speech: JarvisSpeechResult | null = null;
     const ttsInstructions = buildJarvisTtsInstructions(input.personality ?? "attentive");
+    const shouldApplyPollinationsCooldown = jarvisServiceSettings.ttsProvider !== "gemini";
+
+    this.logInfo(
+      `[jarvis-tts] request mode=${jarvisServiceSettings.ttsProvider} ` +
+      `geminiKey=${geminiConfigured ? "configured" : "missing"} ` +
+      `geminiModel=${jarvisServiceSettings.geminiModel} geminiVoice=${jarvisServiceSettings.geminiVoice} ` +
+      `pollinationsModel=${jarvisServiceSettings.speechModel} pollinationsVoice=${jarvisServiceSettings.voice}`
+    );
+
+    if (jarvisServiceSettings.ttsProvider !== "pollinations" && !geminiConfigured) {
+      const warning = jarvisServiceSettings.ttsProvider === "gemini"
+        ? "Gemini mode is selected but phoenixOps.jarvisGeminiApiKey is missing."
+        : "Gemini fallback mode is selected but phoenixOps.jarvisGeminiApiKey is missing. Pollinations-only speech will be used.";
+      this.logWarn(`[jarvis-tts] ${warning}`);
+      if (jarvisServiceSettings.ttsProvider === "gemini") {
+        await this.postStatus(warning, "warn");
+      }
+    }
 
     const speechCooldown = this.jarvisPollinationsCooldown.snapshot("speech");
-    if (!speechCooldown.degraded || !speechCooldown.untilMs) {
+    if (!shouldApplyPollinationsCooldown || !speechCooldown.degraded || !speechCooldown.untilMs) {
       try {
-        speech = await this.jarvisService.synthesizeSpeech(clean, this.getJarvisServiceSettings(settings), ttsInstructions);
+        speech = await this.jarvisService.synthesizeSpeech(clean, jarvisServiceSettings, ttsInstructions);
+        this.logInfo(
+          `[jarvis-tts] success provider=${speech.provider} mode=${speech.mode} ` +
+          `fallback=${speech.usedFallback} mimeType=${speech.mimeType} bytesBase64=${speech.audioBase64.length}`
+        );
+        if (speech.geminiAttempted && speech.provider === "pollinations" && speech.geminiError) {
+          this.logWarn(`[jarvis-tts] Gemini failed; fallback provider=pollinations error=${speech.geminiError}`);
+        }
         this.clearPollinationsCooldown("speech");
       } catch (error) {
-        this.notePollinationsFailure("speech", error, settings);
+        const message = error instanceof Error ? error.message : String(error);
+        if (jarvisServiceSettings.ttsProvider === "gemini") {
+          this.logWarn(`[jarvis-tts] Gemini synthesis failed: ${message}`);
+          await this.postStatus(`Jarvis Gemini TTS failed: ${message}`, "warn");
+        } else {
+          this.notePollinationsFailure("speech", error, settings);
+        }
       }
+    } else {
+      this.logWarn(
+        `[jarvis-tts] skipped speech due Pollinations cooldown (until=${new Date(speechCooldown.untilMs).toISOString()})`
+      );
     }
 
     const payload: JarvisSpeakPayload = {
@@ -1645,7 +1925,10 @@ export class CommandCenterController implements vscode.Disposable {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")]
+        localResourceRoots: [
+          this.context.extensionUri,
+          vscode.Uri.joinPath(this.context.extensionUri, "media")
+        ]
       }
     );
 
@@ -1661,7 +1944,9 @@ export class CommandCenterController implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.persistJarvisSessionMemory(true);
     this.disposed = true;
+    this.closeAllTerminalStreams();
     this.streamClient.dispose();
     this.jarvisHostAudioPlayer.dispose();
     this.sessionPanels.forEach((panel) => panel.dispose());
@@ -1682,6 +1967,8 @@ export class CommandCenterController implements vscode.Disposable {
       clearInterval(this.embeddedSupervisorSyncTimer);
       this.embeddedSupervisorSyncTimer = null;
     }
+    this.cliAuthWatchTimers.forEach((timer) => clearInterval(timer));
+    this.cliAuthWatchTimers.clear();
     this.workspaceSupervisorManager.dispose();
     this.embeddedSupervisorManager.dispose();
     this.output.dispose();
@@ -1727,6 +2014,7 @@ export class CommandCenterController implements vscode.Disposable {
   }
 
   private async restartSupervisorDataFlow(): Promise<void> {
+    this.closeAllTerminalStreams();
     this.streamClient.dispose();
     this.streamConnected = false;
     this.stopPolling();
@@ -1870,6 +2158,10 @@ export class CommandCenterController implements vscode.Disposable {
       } else if (reason === "manual") {
         void this.postStatus("Manual refresh complete", "ok");
       }
+
+      if (reason !== "poll") {
+        void this.refreshCliAuthStatus(["codex", "copilot"]);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       void this.postStatus(`Refresh failed: ${message}`, "err");
@@ -1947,6 +2239,7 @@ export class CommandCenterController implements vscode.Disposable {
     this.snapshot = this.decorateSnapshot(this.withAgents(snapshot));
     this.lastUpdatedMs = Date.now();
     this.streamConnected = this.snapshot.meta.streamConnected;
+    this.syncTerminalStreams();
     void this.pushSnapshot();
   }
 
@@ -1970,7 +2263,271 @@ export class CommandCenterController implements vscode.Disposable {
   }
 
   private async postAuthState(): Promise<void> {
-    await this.postMessageToAllWebviews("auth", { ok: this.ghAuthOk });
+    this.logInfo(
+      `[auth] posting state gh=${this.ghAuthOk ? "ok" : "missing"} ` +
+        `codex=${this.cliAuthState.codex.state}/${this.cliAuthState.codex.summary} ` +
+        `copilot=${this.cliAuthState.copilot.state}/${this.cliAuthState.copilot.summary}`
+    );
+    await this.postMessageToAllWebviews("auth", {
+      ok: this.ghAuthOk,
+      codex: this.cliAuthState.codex,
+      copilot: this.cliAuthState.copilot
+    });
+  }
+
+  private async refreshCliAuthStatus(services: CliAuthService[]): Promise<void> {
+    const settings = this.getRuntimeSettings();
+    this.logInfo(`[auth] refresh start services=${services.join(",")}`);
+    const results = await Promise.all(
+      services.map(async (service) => {
+        const cliPath = service === "codex" ? settings.codexCliPath : settings.copilotCliPath;
+        try {
+          const status = await probeCliAuthStatus(service, cliPath, (line) => {
+            this.logInfo(`[auth:${service}] ${line}`);
+          });
+          this.logInfo(
+            `[auth:${service}] refresh result state=${status.state} ` +
+              `authenticated=${String(status.authenticated)} available=${String(status.available)} ` +
+              `limited=${String(status.limited)} summary=${status.summary} detail=${status.detail}`
+          );
+          return { service, status };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logWarn(`[auth:${service}] refresh failed: ${message}`);
+          return {
+            service,
+            status: {
+              ...createUnknownCliAuthStatus(service),
+              summary: "Status probe failed.",
+              detail: message,
+              checkedAt: new Date().toISOString()
+            }
+          };
+        }
+      })
+    );
+
+    let changed = false;
+    for (const result of results) {
+      const previous = this.cliAuthState[result.service];
+      const next = result.status;
+      if (
+        previous.state !== next.state ||
+        previous.summary !== next.summary ||
+        previous.detail !== next.detail ||
+        previous.authenticated !== next.authenticated ||
+        previous.available !== next.available ||
+        previous.limited !== next.limited
+      ) {
+        this.logInfo(
+          `[auth:${result.service}] state change ${previous.state} -> ${next.state} ` +
+            `(summary='${previous.summary}' -> '${next.summary}')`
+        );
+        this.cliAuthState[result.service] = next;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await this.postAuthState();
+    }
+  }
+
+  private startupTerminalSessionId(service: CliAuthService): string {
+    return `startup-${service}-terminal`;
+  }
+
+  private launchCliInstallTerminal(service: CliAuthService, command: string): void {
+    const trimmed = command.trim();
+    if (!trimmed) {
+      return;
+    }
+    const terminal = vscode.window.createTerminal({
+      name: `Phoenix Ops: Install ${service === "codex" ? "Codex CLI" : "Copilot CLI"}`
+    });
+    terminal.show(false);
+    terminal.sendText(trimmed, true);
+  }
+
+  private async ensureStartupPtyTerminal(service: CliAuthService): Promise<void> {
+    const sessionId = this.startupTerminalSessionId(service);
+    const existingSession = this.snapshot?.agents.sessions.find((session) => session.sessionId === sessionId) ?? null;
+    if (
+      existingSession &&
+      (existingSession.status === "online" || existingSession.status === "busy" || existingSession.status === "waiting")
+    ) {
+      return;
+    }
+
+    const workspaceContext = await resolveCurrentWorkspaceContextHandler();
+    const workspace = workspaceContext?.workspace ?? defaultWorkspacePath();
+    if (!workspace) {
+      this.logWarn(`startup cli bootstrap skipped for ${service}: workspace path unavailable.`);
+      return;
+    }
+
+    const repository = workspaceContext?.repoSlug ?? null;
+    const branch = workspaceContext?.branch ?? null;
+    const agentId = service === "codex" ? "startup-codex" : "startup-copilot";
+
+    await postSupervisorJsonHandler(this.agentRuntimeHandlersDeps(), "/agents/dispatch", {
+      sessionId,
+      agentId,
+      transport: "local",
+      summary: `Startup ${service} PTY terminal bootstrap`,
+      service,
+      mode: "agent",
+      model: null,
+      effort: null,
+      toolProfile: "terminal",
+      mcpTools: [],
+      repository,
+      branch,
+      workspace,
+      issueNumber: null,
+      issueNodeId: null
+    });
+  }
+
+  private async sendStartupTerminalCommand(service: CliAuthService, command: string): Promise<void> {
+    const trimmed = command.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    await postSupervisorJsonHandler(this.agentRuntimeHandlersDeps(), "/agents/terminal/input", {
+      sessionId: this.startupTerminalSessionId(service),
+      data: `${trimmed}\r`
+    });
+  }
+
+  private async bootstrapCliRuntimeOnStartup(): Promise<void> {
+    if (this.startupCliBootstrapDone || this.startupCliBootstrapInFlight || this.disposed) {
+      return;
+    }
+
+    const settings = this.getRuntimeSettings();
+    if (!settings.cliBootstrapOnStartup) {
+      return;
+    }
+
+    this.startupCliBootstrapInFlight = true;
+    try {
+      await this.refreshCliAuthStatus(["codex", "copilot"]);
+
+      for (const service of ["codex", "copilot"] as const) {
+        const status = this.cliAuthState[service];
+
+        if (status.state === "unavailable" && settings.cliStartupAutoInstallMissing) {
+          const installCommand = service === "codex"
+            ? settings.codexCliInstallCommand
+            : settings.copilotCliInstallCommand;
+          if (installCommand.trim()) {
+            this.launchCliInstallTerminal(service, installCommand);
+            await this.postStatus(
+              `${service} CLI not found. Started install command in terminal.`,
+              "warn"
+            );
+          }
+          continue;
+        }
+
+        if (settings.cliStartupSpawnPtyTerminals && status.state !== "unavailable") {
+          await this.ensureStartupPtyTerminal(service);
+        }
+
+        if (settings.cliStartupAutoSignIn && (status.state === "signed-out" || status.state === "unknown")) {
+          const signInCommand = service === "codex" ? "codex login" : "copilot login";
+          await this.sendStartupTerminalCommand(service, signInCommand);
+          await this.postStatus(`Startup sign-in command sent for ${service}.`, "warn");
+        }
+      }
+
+      await this.refreshNow("manual");
+      await this.refreshCliAuthStatus(["codex", "copilot"]);
+      this.startupCliBootstrapDone = true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logWarn(`startup cli bootstrap failed: ${message}`);
+      await this.postStatus(`Startup CLI bootstrap failed: ${message}`, "warn");
+    } finally {
+      this.startupCliBootstrapInFlight = false;
+    }
+  }
+
+  private async watchCliAuthAfterSignIn(service: CliAuthService): Promise<void> {
+    this.logInfo(`[auth:${service}] watch start after sign-in trigger.`);
+    const checkingState: CliAuthStatus = {
+      ...this.cliAuthState[service],
+      state: "checking",
+      summary: "Checking sign-in status...",
+      checkedAt: new Date().toISOString()
+    };
+    this.cliAuthState[service] = checkingState;
+    await this.postAuthState();
+
+    const existing = this.cliAuthWatchTimers.get(service);
+    if (existing) {
+      clearInterval(existing);
+      this.cliAuthWatchTimers.delete(service);
+    }
+
+    let attempts = 0;
+    let running = false;
+    const maxAttempts = 45;
+    const intervalMs = 4000;
+
+    const tick = async () => {
+      if (running || this.disposed) {
+        return;
+      }
+      running = true;
+      attempts += 1;
+      try {
+        this.logInfo(`[auth:${service}] watch tick attempt=${attempts}/${maxAttempts}`);
+        await this.refreshCliAuthStatus([service]);
+      } finally {
+        running = false;
+      }
+
+      const status = this.cliAuthState[service];
+      const done =
+        status.state === "signed-in" ||
+        status.state === "limited" ||
+        status.state === "unavailable" ||
+        attempts >= maxAttempts;
+      if (done) {
+        this.logInfo(
+          `[auth:${service}] watch stopping state=${status.state} attempts=${attempts} summary=${status.summary}`
+        );
+        const timer = this.cliAuthWatchTimers.get(service);
+        if (timer) {
+          clearInterval(timer);
+          this.cliAuthWatchTimers.delete(service);
+        }
+      }
+    };
+
+    await tick();
+
+    if (this.disposed) {
+      return;
+    }
+
+    const status = this.cliAuthState[service];
+    if (
+      status.state === "signed-in" ||
+      status.state === "limited" ||
+      status.state === "unavailable"
+    ) {
+      this.logInfo(`[auth:${service}] watch completed immediately with state=${status.state}.`);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      void tick();
+    }, intervalMs);
+    this.cliAuthWatchTimers.set(service, timer);
   }
 
   private logInfo(message: string): void {
@@ -2023,6 +2580,122 @@ export class CommandCenterController implements vscode.Disposable {
       return;
     }
     await this.postMessageToAllWebviews(type, payload);
+  }
+
+  private closeAllTerminalStreams(): void {
+    for (const client of this.terminalClients.values()) {
+      client.dispose();
+    }
+    this.terminalClients.clear();
+  }
+
+  private syncTerminalStreams(): void {
+    if (!this.snapshot) {
+      this.closeAllTerminalStreams();
+      return;
+    }
+
+    const activeSessionIds = new Set(
+      this.snapshot.agents.sessions
+        .filter((session) => {
+          const service = String(session.service ?? "").toLowerCase();
+          if (service === "jarvis") {
+            return false;
+          }
+          if (session.transport !== "local" && session.transport !== "cli") {
+            return false;
+          }
+          return session.status === "online" || session.status === "busy" || session.status === "waiting";
+        })
+        .map((session) => session.sessionId)
+    );
+
+    for (const sessionId of this.terminalClients.keys()) {
+      if (!activeSessionIds.has(sessionId)) {
+        const client = this.terminalClients.get(sessionId);
+        client?.dispose();
+        this.terminalClients.delete(sessionId);
+      }
+    }
+
+    const settings = this.getRuntimeSettings();
+    for (const sessionId of activeSessionIds) {
+      if (this.terminalClients.has(sessionId)) {
+        continue;
+      }
+
+      const client = new SupervisorTerminalClient();
+      this.terminalClients.set(sessionId, client);
+      client.connect(
+        settings.supervisorBaseUrl,
+        settings.supervisorAuthToken,
+        sessionId,
+        (payload) => {
+          this.handleTerminalStreamPayload(payload);
+        },
+        (error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logWarn(`terminal stream error session=${sessionId}: ${message}`);
+        },
+        () => {
+          this.terminalClients.delete(sessionId);
+          void this.postMessageToAllWebviews("agentTerminalState", {
+            sessionId,
+            state: "unavailable",
+            occurredAt: new Date().toISOString()
+          });
+          if (!this.disposed) {
+            setTimeout(() => {
+              if (!this.disposed) {
+                this.syncTerminalStreams();
+              }
+            }, 1200);
+          }
+        }
+      );
+    }
+  }
+
+  private handleTerminalStreamPayload(payload: AgentTerminalStreamPayload): void {
+    if (!payload || typeof payload !== "object" || typeof payload.sessionId !== "string") {
+      return;
+    }
+
+    if (payload.type === "terminal.chunk") {
+      void this.postMessageToAllWebviews("agentTerminalChunk", payload);
+      return;
+    }
+
+    if (payload.type === "terminal.state") {
+      void this.postMessageToAllWebviews("agentTerminalState", payload);
+    }
+  }
+
+  private async sendAgentTerminalInput(payload: AgentTerminalInputPayload): Promise<void> {
+    const sessionId = typeof payload.sessionId === "string" ? payload.sessionId.trim() : "";
+    if (!sessionId) {
+      return;
+    }
+
+    const data = typeof payload.data === "string" ? payload.data : "";
+    const hasResize =
+      typeof payload.cols === "number" && Number.isFinite(payload.cols) &&
+      typeof payload.rows === "number" && Number.isFinite(payload.rows);
+    if (!data && !hasResize) {
+      return;
+    }
+
+    try {
+      await postSupervisorJsonHandler(this.agentRuntimeHandlersDeps(), "/agents/terminal/input", {
+        sessionId,
+        data,
+        cols: hasResize ? Math.max(20, Math.floor(payload.cols as number)) : null,
+        rows: hasResize ? Math.max(8, Math.floor(payload.rows as number)) : null
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logWarn(`terminal input failed session=${sessionId}: ${message}`);
+    }
   }
 
   private async fetchSnapshot(url: string, authToken = ""): Promise<DashboardSnapshot> {

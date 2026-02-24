@@ -2,7 +2,21 @@ export interface AgentModelOption {
   id: string;
   label: string;
   contextWindow: number | null;
+  reasoningEfforts?: AgentReasoningEffort[];
+  defaultReasoningEffort?: AgentReasoningEffort | null;
+  description?: string | null;
 }
+
+export type AgentReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+const REASONING_EFFORT_SET: ReadonlySet<AgentReasoningEffort> = new Set<AgentReasoningEffort>([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh"
+]);
 
 export interface AgentModelCatalogPayload {
   source: "settings" | "hub" | "hub-fallback";
@@ -63,12 +77,51 @@ export function normalizeAgentModelOption(raw: unknown): AgentModelOption | null
     typeof contextCandidate === "number" && Number.isFinite(contextCandidate) && contextCandidate > 0
       ? Math.round(contextCandidate)
       : null;
+  const defaultReasoningEffort = normalizeReasoningEffort(
+    source.defaultReasoningEffort ?? source.default_reasoning_effort ?? source.reasoningEffort ?? source.reasoning_effort
+  );
+  const reasoningEfforts = normalizeReasoningEffortList(
+    source.supportedReasoningEfforts ?? source.supported_reasoning_efforts ?? source.reasoningEfforts ?? source.reasoning_efforts
+  );
+  const description = typeof source.description === "string" && source.description.trim().length > 0
+    ? source.description.trim()
+    : null;
 
   return {
     id,
     label: labelRaw || prettyModelLabelFromId(id),
-    contextWindow
+    contextWindow,
+    reasoningEfforts,
+    defaultReasoningEffort,
+    description
   };
+}
+
+function normalizeReasoningEffort(raw: unknown): AgentReasoningEffort | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const lowered = raw.trim().toLowerCase();
+  if (REASONING_EFFORT_SET.has(lowered as AgentReasoningEffort)) {
+    return lowered as AgentReasoningEffort;
+  }
+  return null;
+}
+
+function normalizeReasoningEffortList(raw: unknown): AgentReasoningEffort[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const deduped = new Set<AgentReasoningEffort>();
+  for (const entry of raw) {
+    const candidate = typeof entry === "object" && entry
+      ? normalizeReasoningEffort((entry as Record<string, unknown>).reasoningEffort)
+      : normalizeReasoningEffort(entry);
+    if (candidate) {
+      deduped.add(candidate);
+    }
+  }
+  return Array.from(deduped.values());
 }
 
 export function normalizeAgentModelList(raw: unknown): AgentModelOption[] {

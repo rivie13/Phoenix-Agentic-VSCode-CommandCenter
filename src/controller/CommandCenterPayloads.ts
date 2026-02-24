@@ -9,6 +9,7 @@ export interface AgentMessagePayload {
   service?: string;
   mode?: string;
   model?: string;
+  effort?: string;
   toolProfile?: string;
   mcpTools?: string[];
   contextItems?: Array<{ id?: string; label?: string; kind?: string; value?: string | null; uri?: string | null; range?: string | null }>;
@@ -26,6 +27,7 @@ export interface AgentDispatchPayload {
   service?: string;
   mode?: string;
   model?: string;
+  effort?: string;
   toolProfile?: string;
   mcpTools?: string[];
   repository?: string;
@@ -50,6 +52,21 @@ export interface AgentStopPayload {
   sessionId?: string;
   agentId?: string;
   transport?: string;
+}
+
+export interface AgentTerminalInputPayload {
+  sessionId?: string;
+  data?: string;
+  cols?: number;
+  rows?: number;
+}
+
+export interface AgentTerminalStreamPayload {
+  type: "terminal.chunk" | "terminal.state";
+  sessionId: string;
+  data?: string;
+  state?: "connected" | "unavailable" | "error";
+  occurredAt?: string;
 }
 
 export interface IssueActionPayload {

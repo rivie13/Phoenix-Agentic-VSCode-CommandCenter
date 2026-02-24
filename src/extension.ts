@@ -19,6 +19,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("phoenixOps.signIn", async () => controller.signInCommand()),
     vscode.commands.registerCommand("phoenixOps.signInCodexCli", async () => controller.signInCodexCliCommand()),
     vscode.commands.registerCommand("phoenixOps.signInCopilotCli", async () => controller.signInCopilotCliCommand()),
+    vscode.commands.registerCommand("phoenixOps.geminiSignIn", async () => controller.geminiSignInCommand()),
+    vscode.commands.registerCommand("phoenixOps.geminiSetApiKey", async () => controller.geminiSetApiKeyCommand()),
     vscode.commands.registerCommand("phoenixOps.pollinationsSignIn", async () => controller.pollinationsSignInCommand()),
     vscode.commands.registerCommand("phoenixOps.pollinationsSetApiKey", async () => controller.pollinationsSetApiKeyCommand()),
     vscode.commands.registerCommand("phoenixOps.configureSupervisorMode", async () => controller.configureSupervisorModeCommand()),

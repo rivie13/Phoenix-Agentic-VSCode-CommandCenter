@@ -92,14 +92,52 @@ function sanitizeCustomSchemes(raw) {
 
 const fallbackModelCatalog = {
   codex: [
-    { id: "gpt-5.3-codex", label: "GPT-5.3-Codex", contextWindow: 200000 },
-    { id: "gpt-5-codex", label: "GPT-5-Codex", contextWindow: 128000 }
+    {
+      id: "gpt-5.3-codex",
+      label: "GPT-5.3-Codex",
+      contextWindow: 200000,
+      reasoningEfforts: ["low", "medium", "high", "xhigh"],
+      defaultReasoningEffort: "medium"
+    },
+    {
+      id: "gpt-5.2-codex",
+      label: "GPT-5.2-Codex",
+      contextWindow: 128000,
+      reasoningEfforts: ["low", "medium", "high", "xhigh"],
+      defaultReasoningEffort: "medium"
+    }
   ],
   copilot: [
     { id: "gpt-4.1", label: "GPT-4.1", contextWindow: 128000 },
-    { id: "claude-sonnet", label: "Claude Sonnet", contextWindow: 200000 }
+    { id: "claude-sonnet-4.6", label: "Claude Sonnet 4.6", contextWindow: 200000 }
   ]
 };
+
+const supportedReasoningEfforts = ["none", "minimal", "low", "medium", "high", "xhigh"];
+
+function normalizeReasoningEffort(raw) {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const lowered = raw.trim().toLowerCase();
+  return supportedReasoningEfforts.includes(lowered) ? lowered : null;
+}
+
+function normalizeReasoningEffortList(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const deduped = new Set();
+  raw.forEach((entry) => {
+    const candidate = entry && typeof entry === "object"
+      ? normalizeReasoningEffort(entry.reasoningEffort)
+      : normalizeReasoningEffort(entry);
+    if (candidate) {
+      deduped.add(candidate);
+    }
+  });
+  return Array.from(deduped.values());
+}
 
 function normalizeModelContextWindow(raw) {
   const parsed = Number(raw);
@@ -118,7 +156,10 @@ function normalizeModelOption(raw) {
     return {
       id,
       label: id,
-      contextWindow: null
+      contextWindow: null,
+      reasoningEfforts: [],
+      defaultReasoningEffort: null,
+      description: null
     };
   }
   if (!raw || typeof raw !== "object") {
@@ -130,10 +171,21 @@ function normalizeModelOption(raw) {
     return null;
   }
   const label = String(raw.label ?? raw.name ?? id).trim() || id;
+  const reasoningEfforts = normalizeReasoningEffortList(
+    raw.reasoningEfforts ?? raw.reasoning_efforts ?? raw.supportedReasoningEfforts ?? raw.supported_reasoning_efforts
+  );
+  const defaultReasoningEffort = normalizeReasoningEffort(
+    raw.defaultReasoningEffort ?? raw.default_reasoning_effort ?? raw.reasoningEffort ?? raw.reasoning_effort
+  );
   return {
     id,
     label,
-    contextWindow: normalizeModelContextWindow(raw.contextWindow ?? raw.context_window ?? raw.context ?? raw.contextTokens)
+    contextWindow: normalizeModelContextWindow(raw.contextWindow ?? raw.context_window ?? raw.context ?? raw.contextTokens),
+    reasoningEfforts,
+    defaultReasoningEffort,
+    description: typeof raw.description === "string" && raw.description.trim().length > 0
+      ? raw.description.trim()
+      : null
   };
 }
 
@@ -216,12 +268,88 @@ function createDefaultIssueCreateDraft() {
   };
 }
 
+function createUnknownCliAuthClientState(service) {
+  return {
+    service,
+    state: "unknown",
+    authenticated: false,
+    available: true,
+    limited: false,
+    summary: "Status unavailable.",
+    detail: "",
+    checkedAt: ""
+  };
+}
+
+function normalizeCliAuthClientState(raw, service) {
+  const fallback = createUnknownCliAuthClientState(service);
+  if (!raw || typeof raw !== "object") {
+    return fallback;
+  }
+
+  const stateValue = String(raw.state || "").trim().toLowerCase();
+  const validState = ["unknown", "checking", "signed-in", "signed-out", "limited", "unavailable"].includes(stateValue)
+    ? stateValue
+    : "unknown";
+
+  return {
+    service,
+    state: validState,
+    authenticated: Boolean(raw.authenticated),
+    available: typeof raw.available === "boolean" ? raw.available : true,
+    limited: Boolean(raw.limited),
+    summary: typeof raw.summary === "string" && raw.summary.trim() ? raw.summary.trim() : fallback.summary,
+    detail: typeof raw.detail === "string" ? raw.detail.trim() : "",
+    checkedAt: typeof raw.checkedAt === "string" ? raw.checkedAt : ""
+  };
+}
+
+function formatCliAuthButtonText(label, status) {
+  const normalized = normalizeCliAuthClientState(status, String(label || "").toLowerCase().includes("copilot") ? "copilot" : "codex");
+  const stateLabel = normalized.state === "signed-in"
+    ? "Signed In"
+    : normalized.state === "signed-out"
+      ? "Sign In"
+      : normalized.state === "limited"
+        ? "Limited"
+        : normalized.state === "checking"
+          ? "Checking..."
+          : normalized.state === "unavailable"
+            ? "Unavailable"
+            : "Status";
+  return `${label}: ${stateLabel}`;
+}
+
+function formatCliAuthMeta(label, status) {
+  const normalized = normalizeCliAuthClientState(status, String(label || "").toLowerCase().includes("copilot") ? "copilot" : "codex");
+  if (normalized.state === "limited") {
+    return `${label}: limited`;
+  }
+  if (normalized.state === "signed-in") {
+    return `${label}: signed in`;
+  }
+  if (normalized.state === "signed-out") {
+    return `${label}: not signed in`;
+  }
+  if (normalized.state === "checking") {
+    return `${label}: checking`;
+  }
+  if (normalized.state === "unavailable") {
+    return `${label}: unavailable`;
+  }
+  return `${label}: unknown`;
+}
+
 const state = {
   mode: bootMode,
   sessionLockId: typeof boot.lockedSessionId === "string" ? boot.lockedSessionId : null,
   snapshot: null,
   selected: null,
-  auth: { ok: false },
+  auth: {
+    ok: false,
+    codex: createUnknownCliAuthClientState("codex"),
+    copilot: createUnknownCliAuthClientState("copilot")
+  },
   filters: {
     repo: "all",
     lane: "all",
@@ -238,7 +366,8 @@ const state = {
   pullRequestInsightsLoading: null,
   actionRunLogLoading: null,
   sessionCollapse: {},
-  showArchived: false,
+  showArchived: persisted.showArchived === true,
+  showOlderSessions: persisted.showOlderSessions === true,
   ui: {
     opsSettingsOpen: persisted.opsSettingsOpen === true,
     workspaceControlsOpen: persisted.workspaceControlsOpen !== false,
@@ -248,6 +377,8 @@ const state = {
     actionsSectionOpen: persisted.actionsSectionOpen !== false,
     activeWorkspaceTab: workspaceTabs.includes(persisted.activeWorkspaceTab) ? persisted.activeWorkspaceTab : "board",
     sessionsSectionOpen: persisted.sessionsSectionOpen !== false,
+    jarvisSectionOpen: persisted.jarvisSectionOpen !== false,
+    terminalSectionOpen: persisted.terminalSectionOpen !== false,
     chatSectionOpen: persisted.chatSectionOpen !== false,
     composerSectionOpen: persisted.composerSectionOpen !== false,
     contextPickerOpen: persisted.contextPickerOpen === true
@@ -263,6 +394,7 @@ const state = {
     mode: typeof persisted.composeMode === "string" ? persisted.composeMode : "agent",
     service: typeof persisted.composeService === "string" ? persisted.composeService : "codex",
     model: typeof persisted.composeModel === "string" ? persisted.composeModel : "gpt-5.3-codex",
+    effort: typeof persisted.composeEffort === "string" ? persisted.composeEffort : "",
     tool: typeof persisted.composeTool === "string" ? persisted.composeTool : "auto",
     issueNumber: Number.isInteger(persisted.composeIssueNumber) && Number(persisted.composeIssueNumber) > 0
       ? Number(persisted.composeIssueNumber)
@@ -285,6 +417,11 @@ const state = {
       copilotDefaultModel: null,
       copilotCloudEnabled: false
     }
+  },
+  terminal: {
+    buffers: {},
+    states: {},
+    attachedSessionId: null
   },
   jarvis: {
     enabled: true,
@@ -372,6 +509,8 @@ function persistUiState() {
     actionsSectionOpen: state.ui.actionsSectionOpen,
     activeWorkspaceTab: state.ui.activeWorkspaceTab,
     sessionsSectionOpen: state.ui.sessionsSectionOpen,
+    jarvisSectionOpen: state.ui.jarvisSectionOpen,
+    terminalSectionOpen: state.ui.terminalSectionOpen,
     chatSectionOpen: state.ui.chatSectionOpen,
     composerSectionOpen: state.ui.composerSectionOpen,
     contextPickerOpen: state.ui.contextPickerOpen,
@@ -382,11 +521,14 @@ function persistUiState() {
     composeMode: state.compose.mode,
     composeService: state.compose.service,
     composeModel: state.compose.model,
+    composeEffort: state.compose.effort,
     composeTool: state.compose.tool,
     composeIssueNumber: state.compose.issueNumber,
     composeIssueNodeId: state.compose.issueNodeId,
     composeMcpTools: state.compose.mcpTools,
-    contextItems: state.contextItems
+    contextItems: state.contextItems,
+    showArchived: state.showArchived,
+    showOlderSessions: state.showOlderSessions
   });
 }
 
@@ -799,6 +941,15 @@ function ensureComposeDefaults() {
   if (!validModel) {
     state.compose.model = models[0].id;
   }
+  const selectedModel = selectedModelInfo();
+  const supportedEfforts = Array.isArray(selectedModel?.reasoningEfforts) ? selectedModel.reasoningEfforts : [];
+  if (supportedEfforts.length === 0) {
+    state.compose.effort = "";
+  } else if (!supportedEfforts.includes(state.compose.effort)) {
+    state.compose.effort = selectedModel?.defaultReasoningEffort && supportedEfforts.includes(selectedModel.defaultReasoningEffort)
+      ? selectedModel.defaultReasoningEffort
+      : supportedEfforts[0];
+  }
   if (!["auto", "repo", "terminal"].includes(state.compose.tool)) {
     state.compose.tool = "auto";
   }
@@ -848,8 +999,25 @@ function updateFilterOptions(snapshot) {
 
 function renderAuth() {
   const signIn = byId("signInButton");
-  signIn.textContent = state.auth.ok ? "Signed In" : "Sign In";
-  signIn.disabled = state.auth.ok;
+  const codexSignIn = byId("signInCodexButton");
+  const copilotSignIn = byId("signInCopilotButton");
+
+  if (signIn) {
+    signIn.textContent = state.auth.ok ? "Signed In" : "Sign In";
+    signIn.disabled = state.auth.ok;
+  }
+
+  if (codexSignIn) {
+    codexSignIn.textContent = formatCliAuthButtonText("Codex", state.auth.codex);
+    const detail = state.auth.codex?.detail ? ` ${state.auth.codex.detail}` : "";
+    codexSignIn.title = `${state.auth.codex?.summary || "Status unavailable."}${detail}`.trim();
+  }
+
+  if (copilotSignIn) {
+    copilotSignIn.textContent = formatCliAuthButtonText("Copilot", state.auth.copilot);
+    const detail = state.auth.copilot?.detail ? ` ${state.auth.copilot.detail}` : "";
+    copilotSignIn.title = `${state.auth.copilot?.summary || "Status unavailable."}${detail}`.trim();
+  }
 }
 
 function formatCooldownUntil(isoString) {
@@ -869,50 +1037,67 @@ function formatCooldownUntil(isoString) {
 }
 
 function renderJarvisStatus() {
-  const status = byId("jarvisStatus");
-  const focus = byId("jarvisFocus");
-  const modeButton = byId("jarvisModeButton");
-  const wakeButton = byId("jarvisWakeButton");
+  const topbarStatus = byId("jarvisStatus");
+  const topbarFocus = byId("jarvisFocus");
+  const hubStatus = byId("jarvisHubStatus");
+  const hubFocus = byId("jarvisHubFocus");
+  const modeButtons = [byId("jarvisModeButton"), byId("jarvisModeButtonHub")];
+  const wakeButtons = [byId("jarvisWakeButton"), byId("jarvisWakeButtonHub")];
 
-  if (status) {
-    if (!state.jarvis.enabled) {
-      status.textContent = "Jarvis: disabled";
-    } else if (state.jarvis.manualMode) {
-      status.textContent = `Jarvis: manual mode | ${state.jarvis.announcementsLastHour}/${state.jarvis.maxAnnouncementsPerHour} auto in last hour`;
-    } else {
-      status.textContent = `Jarvis: auto on | ${state.jarvis.announcementsLastHour}/${state.jarvis.maxAnnouncementsPerHour} auto in last hour`;
+  let statusText = "Jarvis: disabled";
+  if (state.jarvis.enabled) {
+    statusText = state.jarvis.manualMode
+      ? `Jarvis: manual mode | ${state.jarvis.announcementsLastHour}/${state.jarvis.maxAnnouncementsPerHour} auto in last hour`
+      : `Jarvis: auto on | ${state.jarvis.announcementsLastHour}/${state.jarvis.maxAnnouncementsPerHour} auto in last hour`;
+  }
+  if (state.jarvis.chatDegraded || state.jarvis.speechDegraded) {
+    statusText += " | API degraded";
+  }
+
+  const reason = state.jarvis.lastReason ? `Reason: ${state.jarvis.lastReason}` : "";
+  const context = state.jarvis.focusLabel ? `Focus: ${state.jarvis.focusLabel}` : "";
+  const chatApi = state.jarvis.chatDegraded
+    ? `Chat API: ${state.jarvis.chatFailureKind || "degraded"}${formatCooldownUntil(state.jarvis.chatCooldownUntil) ? ` (${formatCooldownUntil(state.jarvis.chatCooldownUntil)})` : ""}`
+    : "";
+  const speechApi = state.jarvis.speechDegraded
+    ? `Speech API: ${state.jarvis.speechFailureKind || "degraded"}${formatCooldownUntil(state.jarvis.speechCooldownUntil) ? ` (${formatCooldownUntil(state.jarvis.speechCooldownUntil)})` : ""}`
+    : "";
+  const audioError = state.jarvis.audioError ? `Audio: ${state.jarvis.audioError}` : "";
+  const wakeStatus = state.jarvis.wakeWordStatus ? `Wake: ${state.jarvis.wakeWordStatus}` : "";
+  const focusText = [reason, context, chatApi, speechApi, audioError, wakeStatus].filter((value) => value.length > 0).join(" | ");
+
+  if (topbarStatus) {
+    topbarStatus.textContent = statusText;
+  }
+  if (hubStatus) {
+    hubStatus.textContent = statusText;
+  }
+  if (topbarFocus) {
+    topbarFocus.textContent = focusText;
+  }
+  if (hubFocus) {
+    hubFocus.textContent = focusText;
+  }
+
+  modeButtons.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
     }
-    if (state.jarvis.chatDegraded || state.jarvis.speechDegraded) {
-      status.textContent += " | API degraded";
+    button.textContent = state.jarvis.manualMode ? "Jarvis Auto: Off" : "Jarvis Auto: On";
+  });
+
+  wakeButtons.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
     }
-  }
-
-  if (focus) {
-    const reason = state.jarvis.lastReason ? `Reason: ${state.jarvis.lastReason}` : "";
-    const context = state.jarvis.focusLabel ? `Focus: ${state.jarvis.focusLabel}` : "";
-    const chatApi = state.jarvis.chatDegraded
-      ? `Chat API: ${state.jarvis.chatFailureKind || "degraded"}${formatCooldownUntil(state.jarvis.chatCooldownUntil) ? ` (${formatCooldownUntil(state.jarvis.chatCooldownUntil)})` : ""}`
-      : "";
-    const speechApi = state.jarvis.speechDegraded
-      ? `Speech API: ${state.jarvis.speechFailureKind || "degraded"}${formatCooldownUntil(state.jarvis.speechCooldownUntil) ? ` (${formatCooldownUntil(state.jarvis.speechCooldownUntil)})` : ""}`
-      : "";
-    const audioError = state.jarvis.audioError ? `Audio: ${state.jarvis.audioError}` : "";
-    const wakeStatus = state.jarvis.wakeWordStatus ? `Wake: ${state.jarvis.wakeWordStatus}` : "";
-    focus.textContent = [reason, context, chatApi, speechApi, audioError, wakeStatus].filter((value) => value.length > 0).join(" | ");
-  }
-
-  if (modeButton) {
-    modeButton.textContent = state.jarvis.manualMode ? "Jarvis Auto: Off" : "Jarvis Auto: On";
-  }
-  if (wakeButton) {
     if (!state.jarvis.wakeWordSupported) {
-      wakeButton.textContent = "Wake Word: N/A";
-      wakeButton.setAttribute("disabled", "true");
+      button.textContent = "Wake Word: N/A";
+      button.setAttribute("disabled", "true");
     } else {
-      wakeButton.removeAttribute("disabled");
-      wakeButton.textContent = state.jarvis.wakeWordEnabled ? "Wake Word: On" : "Wake Word: Off";
+      button.removeAttribute("disabled");
+      button.textContent = state.jarvis.wakeWordEnabled ? "Wake Word: On" : "Wake Word: Off";
     }
-  }
+  });
 }
 
 function applyJarvisFocusHint(hint) {
@@ -1761,6 +1946,8 @@ function render() {
   renderPullRequestCommentPanel();
   renderActions();
   renderSessions();
+  renderJarvisSupervisorSection();
+  renderTerminalPanel();
   renderControlMeta();
   renderStopButtons();
   renderFeed();

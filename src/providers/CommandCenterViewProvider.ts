@@ -35,6 +35,7 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [
+        this.extensionUri,
         vscode.Uri.joinPath(this.extensionUri, "media")
       ]
     };
@@ -80,14 +81,23 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
   public getHtml(webview: vscode.Webview, boot: ViewBootConfig = { mode: "full", lockedSessionId: null }): string {
     const nonce = createNonce();
     const scriptUris = [
+      webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "node_modules", "@xterm", "xterm", "lib", "xterm.js")),
       "webview.js",
       "webview.issue-forms.js",
       "webview.actions.js",
       "webview.pull-requests.js",
       "webview.agent.js",
       "webview.events.js"
-    ].map((name) => webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", name)));
+    ].map((entry) => {
+      if (typeof entry === "string") {
+        return webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", entry));
+      }
+      return entry;
+    });
     const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "media", "webview.css"));
+    const xtermCssUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, "node_modules", "@xterm", "xterm", "css", "xterm.css")
+    );
     const bodyClass = boot.mode === "agent-only" ? "agent-only" : "full-mode";
     const bootJson = JSON.stringify({
       mode: boot.mode ?? "full",
@@ -101,6 +111,7 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; media-src ${webview.cspSource} data: blob:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="${cssUri}" />
+  <link rel="stylesheet" href="${xtermCssUri}" />
   <title>Phoenix Command Center</title>
 </head>
 <body class="${bodyClass}">
@@ -115,21 +126,19 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
     <details id="opsSettingsSection" class="topbar-settings foldout">
       <summary class="foldout-summary topbar-settings-summary">
         <span class="lane-title">Ops Settings and Tools</span>
-        <span class="meta-line">Sign-in, Jarvis, supervisor, and model controls</span>
+        <span class="meta-line">Sign-in, supervisor, and model controls</span>
       </summary>
       <div class="foldout-body topbar-settings-body">
         <div class="topbar-actions">
           <button id="signInButton">Sign In</button>
           <button id="signInCodexButton">Codex CLI</button>
           <button id="signInCopilotButton">Copilot CLI</button>
+          <button id="geminiSignInButton">Gemini Key Portal</button>
+          <button id="geminiApiKeyButton">Set Gemini Key</button>
           <button id="pollinationsSignInButton">Pollinations Sign In</button>
           <button id="pollinationsApiKeyButton">Set Pollinations Key</button>
           <button id="configureSupervisorButton">Supervisor Mode</button>
-          <button id="configureJarvisVoiceButton">Voice Model</button>
           <button id="configureModelHubButton">Model Hub</button>
-          <button id="jarvisCallButton">Ask Jarvis</button>
-          <button id="jarvisModeButton">Jarvis Auto: On</button>
-          <button id="jarvisWakeButton">Wake Word: Off</button>
           <button id="openAgentWorkspacePanelButton">Open Right Agent Panel</button>
           <button id="refreshButton">Refresh</button>
         </div>
@@ -534,12 +543,45 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
               <input id="showArchivedSessions" type="checkbox" />
               Show archived
             </label>
+            <label class="toggle-label">
+              <input id="showOlderSessions" type="checkbox" />
+              Show older than 24h
+            </label>
           </div>
           <div id="agentSessions" class="agent-sessions"></div>
           <section class="panel nested-panel" style="margin-top: 10px;">
             <h3>Agent Feed</h3>
             <div id="agentFeed" class="agent-feed"></div>
           </section>
+        </div>
+      </details>
+      <details id="agentJarvisSection" class="panel foldout jarvis-foldout" open>
+        <summary class="foldout-summary">
+          <span class="lane-title">Jarvis Supervisor</span>
+          <span id="jarvisSectionMeta" class="meta-line">Meta supervisor status</span>
+        </summary>
+        <div class="foldout-body">
+          <div id="jarvisHubStatus" class="feed-inline">Jarvis: initializing</div>
+          <div id="jarvisHubFocus" class="meta-line secondary"></div>
+          <div class="inline-actions">
+            <button id="jarvisCallButtonHub" class="lane-action" type="button">Ask Jarvis</button>
+            <button id="configureJarvisVoiceButtonHub" class="lane-action" type="button">Jarvis TTS</button>
+            <button id="jarvisModeButtonHub" class="lane-action" type="button">Jarvis Auto: On</button>
+            <button id="jarvisWakeButtonHub" class="lane-action" type="button">Wake Word: Off</button>
+          </div>
+          <section class="panel nested-panel">
+            <h3>Jarvis Feed</h3>
+            <div id="jarvisFeed" class="agent-feed"></div>
+          </section>
+        </div>
+      </details>
+      <details id="agentTerminalSection" class="panel foldout terminal-foldout" open>
+        <summary class="foldout-summary">
+          <span class="lane-title">Agent Terminal</span>
+          <span id="agentTerminalMeta" class="meta-line">No active terminal session.</span>
+        </summary>
+        <div class="foldout-body">
+          <div id="agentTerminalMount" class="agent-terminal-mount"></div>
         </div>
       </details>
       <details id="agentChatSection" class="panel foldout chat-foldout" open>
@@ -592,6 +634,7 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
                 <option value="copilot">Copilot</option>
               </select>
               <select id="composerModelSelect" class="composer-select" title="Model"></select>
+              <select id="composerEffortSelect" class="composer-select" title="Reasoning strength"></select>
               <select id="composerToolSelect" class="composer-select" title="Tool">
                 <option value="auto">Tools: Auto</option>
                 <option value="repo">Tools: Repo</option>
