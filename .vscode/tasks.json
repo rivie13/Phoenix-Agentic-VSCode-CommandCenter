@@ -79,6 +79,12 @@
         "Command Center: Package VSIX"
       ],
       "problemMatcher": []
+    },
+    {
+      "label": "Command Center: Jarvis Audition Personalities",
+      "type": "shell",
+      "command": "node .\\scripts\\jarvis-audition.mjs",
+      "problemMatcher": []
     }
   ],
   "inputs": [

@@ -9,7 +9,10 @@ import {
   buildFallbackJarvisReply,
   buildJarvisSystemPrompt,
   buildJarvisUserPrompt,
-  pickAutoJarvisDecision
+  pickAutoJarvisDecision,
+  determineJarvisPersonality,
+  type JarvisIdentity,
+  type JarvisPersonalityMode
 } from "../utils/jarvisPrompts";
 import type { JarvisFocusHint } from "./CommandCenterPayloads";
 
@@ -61,10 +64,11 @@ export interface JarvisInteractionHandlersDeps {
     settings: ReturnType<DataService["getSettings"]>
   ) => string;
   rememberJarvisTurn: (role: "user" | "assistant", content: string, historyTurns: number) => void;
-  emitJarvisSpeech: (input: { text: string; reason: string; auto: boolean; focusHint: JarvisFocusHint | null }) => Promise<void>;
+  emitJarvisSpeech: (input: { text: string; reason: string; auto: boolean; focusHint: JarvisFocusHint | null; personality?: JarvisPersonalityMode }) => Promise<void>;
   refreshNow: (reason: RefreshReason) => Promise<void>;
   tryJarvisDelegatedApproval: (prompt: string, snapshot: DashboardSnapshot) => Promise<JarvisDelegatedApprovalResult | null>;
   showWarningMessage: (message: string) => void;
+  getJarvisIdentity: () => JarvisIdentity | null;
 }
 
 export async function tickJarvisAuto(deps: JarvisInteractionHandlersDeps): Promise<void> {
@@ -78,11 +82,13 @@ export async function tickJarvisAuto(deps: JarvisInteractionHandlersDeps): Promi
     return;
   }
 
+  const identity = deps.getJarvisIdentity();
   const decision = pickAutoJarvisDecision(snapshot, {
     nowMs: Date.now(),
     lastAnnouncementMs: deps.getJarvisLastAnnouncementMs(),
     jarvisOfferJokes: settings.jarvisOfferJokes,
-    randomValue: Math.random()
+    randomValue: Math.random(),
+    identity: identity ?? undefined
   });
   if (!decision || !deps.canAnnounceJarvis(decision.reason, settings)) {
     return;
@@ -100,8 +106,9 @@ export async function tickJarvisAuto(deps: JarvisInteractionHandlersDeps): Promi
     return;
   }
 
-  const systemPrompt = buildJarvisSystemPrompt(true);
-  const userPrompt = buildJarvisUserPrompt(decision.prompt, snapshot, true);
+  const personality = determineJarvisPersonality(snapshot, deps.getJarvisLastAnnouncementMs(), Date.now());
+  const systemPrompt = buildJarvisSystemPrompt(personality, true, identity ?? undefined);
+  const userPrompt = buildJarvisUserPrompt(decision.prompt, snapshot, true, personality, identity ?? undefined);
   const serviceSettings = deps.getJarvisServiceSettings(settings);
   let text: string;
 
@@ -110,7 +117,9 @@ export async function tickJarvisAuto(deps: JarvisInteractionHandlersDeps): Promi
     text = buildFallbackJarvisReply(
       snapshot,
       `Automatic status check (${decision.reason}). ${deps.pollinationsCooldownNotice("chat", chatCooldown.failureKind, chatCooldown.untilMs)}`,
-      true
+      true,
+      personality,
+      identity ?? undefined
     );
   } else {
     try {
@@ -120,7 +129,13 @@ export async function tickJarvisAuto(deps: JarvisInteractionHandlersDeps): Promi
       deps.rememberJarvisTurn("assistant", text, settings.jarvisConversationHistoryTurns);
     } catch (error) {
       const message = deps.notePollinationsFailure("chat", error, settings);
-      text = buildFallbackJarvisReply(snapshot, `Automatic status check (${decision.reason}). ${message}`, true);
+      text = buildFallbackJarvisReply(
+        snapshot,
+        `Automatic status check (${decision.reason}). ${message}`,
+        true,
+        personality,
+        identity ?? undefined
+      );
     }
   }
 
@@ -128,7 +143,8 @@ export async function tickJarvisAuto(deps: JarvisInteractionHandlersDeps): Promi
     text,
     reason: decision.reason,
     auto: true,
-    focusHint: decision.focusHint
+    focusHint: decision.focusHint,
+    personality
   });
 }
 
@@ -173,9 +189,11 @@ export async function activateJarvis(deps: JarvisInteractionHandlersDeps, prompt
     return;
   }
 
+  const identity = deps.getJarvisIdentity();
+  const personality = determineJarvisPersonality(snapshot, deps.getJarvisLastAnnouncementMs(), Date.now());
   const serviceSettings = deps.getJarvisServiceSettings(settings);
-  const systemPrompt = buildJarvisSystemPrompt(false);
-  const userPrompt = buildJarvisUserPrompt(normalizedPrompt, snapshot, false);
+  const systemPrompt = buildJarvisSystemPrompt(personality, false, identity ?? undefined);
+  const userPrompt = buildJarvisUserPrompt(normalizedPrompt, snapshot, false, personality, identity ?? undefined);
   let reply: string;
 
   const chatCooldown = deps.getPollinationsCooldownSnapshot("chat");
@@ -183,7 +201,9 @@ export async function activateJarvis(deps: JarvisInteractionHandlersDeps, prompt
     reply = buildFallbackJarvisReply(
       snapshot,
       `${normalizedPrompt}. ${deps.pollinationsCooldownNotice("chat", chatCooldown.failureKind, chatCooldown.untilMs)}`,
-      false
+      false,
+      personality,
+      identity ?? undefined
     );
   } else {
     try {
@@ -191,7 +211,7 @@ export async function activateJarvis(deps: JarvisInteractionHandlersDeps, prompt
       deps.clearPollinationsCooldown("chat");
     } catch (error) {
       const message = deps.notePollinationsFailure("chat", error, settings);
-      reply = buildFallbackJarvisReply(snapshot, `${normalizedPrompt}. ${message}`, false);
+      reply = buildFallbackJarvisReply(snapshot, `${normalizedPrompt}. ${message}`, false, personality, identity ?? undefined);
     }
   }
 
@@ -201,6 +221,7 @@ export async function activateJarvis(deps: JarvisInteractionHandlersDeps, prompt
     text: reply,
     reason: "manual-request",
     auto: false,
-    focusHint: null
+    focusHint: null,
+    personality
   });
 }

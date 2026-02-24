@@ -222,6 +222,7 @@ function latestSessionFeedEntry(session) {
     return null;
   }
   const entries = (state.snapshot?.agents?.feed || [])
+    .filter((entry) => !isJarvisFeedEntry(entry))
     .filter((entry) => entry.sessionId === session.sessionId)
     .sort((a, b) => (parseMs(b.occurredAt) || 0) - (parseMs(a.occurredAt) || 0));
   return entries[0] || null;
@@ -230,6 +231,7 @@ function latestSessionFeedEntry(session) {
 function buildSessionConversationRows(session) {
   const sessionId = session?.sessionId || null;
   const feedRows = (state.snapshot?.agents?.feed || [])
+    .filter((entry) => !isJarvisFeedEntry(entry))
     .filter((entry) => !sessionId || entry.sessionId === sessionId)
     .map((entry) => {
       const parsed = parseFeedEntryForChat(entry);
@@ -520,7 +522,9 @@ function textLine(text, className = "meta-line") {
 function renderFeed() {
   const root = byId("agentFeed");
   root.innerHTML = "";
-  const entries = [...(state.snapshot?.agents?.feed || [])].sort((a, b) => (parseMs(b.occurredAt) || 0) - (parseMs(a.occurredAt) || 0));
+  const entries = [...(state.snapshot?.agents?.feed || [])]
+    .filter((entry) => !isJarvisFeedEntry(entry))
+    .sort((a, b) => (parseMs(b.occurredAt) || 0) - (parseMs(a.occurredAt) || 0));
   const selected = selectedSession();
   const stats = computeSessionStats(selected);
   const statsLine = document.createElement("div");
@@ -867,6 +871,7 @@ function renderChatTimeline() {
   statsRow.textContent = formatSessionStats(stats);
   root.appendChild(statsRow);
   const feedRows = (state.snapshot?.agents?.feed || [])
+    .filter((entry) => !isJarvisFeedEntry(entry))
     .filter((entry) => !session || entry.sessionId === session.sessionId)
     .sort((a, b) => (parseMs(a.occurredAt) || 0) - (parseMs(b.occurredAt) || 0))
     .slice(-80)

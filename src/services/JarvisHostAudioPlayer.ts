@@ -8,6 +8,7 @@ export interface JarvisHostAudioPlaybackRequest {
   mimeType: string | null;
   reason: string;
   auto: boolean;
+  spacingAfterMs?: number;
 }
 
 interface JarvisHostAudioPlayerLogger {
@@ -110,6 +111,10 @@ export class JarvisHostAudioPlayer {
       await fs.writeFile(filePath, bytes);
       await this.playFile(filePath, request.mimeType);
       this.logger.info(`[jarvis-audio-host] playback completed (reason=${request.reason}, auto=${request.auto}).`);
+      const spacingAfterMs = Math.max(0, Math.min(10_000, Number(request.spacingAfterMs ?? 0)));
+      if (spacingAfterMs > 0) {
+        await this.sleep(spacingAfterMs);
+      }
     } finally {
       await fs.rm(filePath, { force: true }).catch(() => {
         // no-op
@@ -235,6 +240,12 @@ export class JarvisHostAudioPlayer {
         }
         finish(new Error(`exitCode=${String(code)} signal=${String(signal ?? "")}`));
       });
+    });
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
     });
   }
 }

@@ -209,7 +209,7 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
     this.log(`Launch command: ${command} ${args.join(" ")}`);
     this.log(
       `Jarvis env: baseUrl=${config.jarvisApiBaseUrl || "(auto)"} apiKeyConfigured=${Boolean(config.jarvisApiKey)} ` +
-      `textModel=${config.jarvisTextModel || "(auto)"} speechModel=${config.jarvisSpeechModel || "(auto)"} voice=${config.jarvisVoice || "alloy"}`
+      `textModel=${config.jarvisTextModel || "(auto)"} speechModel=${config.jarvisSpeechModel || "(auto)"} voice=${config.jarvisVoice || "onyx"}`
     );
 
     this.child = spawn(command, args, {

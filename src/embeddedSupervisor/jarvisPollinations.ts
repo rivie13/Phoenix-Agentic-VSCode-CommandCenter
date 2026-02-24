@@ -6,6 +6,7 @@ import {
   normalizePollinationsFailure,
   parseRetryAfterSeconds
 } from "../services/PollinationsResilience";
+import { buildJarvisSystemPrompt } from "../utils/jarvisPrompts";
 
 interface PollinationsChatResponse {
   choices?: Array<{
@@ -135,6 +136,17 @@ const SUMMARY_PENDING_LIMIT = 6;
 const SUMMARY_QA_LIMIT = 6;
 const SUMMARY_FEED_LIMIT = 10;
 
+function pickPersonalityFromEmbeddedSnapshot(
+  snapshot: EmbeddedJarvisSnapshot
+): "serene" | "attentive" | "alert" | "escalating" {
+  const pending = snapshot.agents.pendingCommands.filter((c) => c.status === "pending");
+  const highRisk = pending.filter((c) => c.risk === "high");
+  const errors = snapshot.agents.sessions.filter((s) => s.status === "error");
+  if (highRisk.length > 0 || errors.length >= 2) return "escalating";
+  if (pending.length > 0 || snapshot.agents.sessions.length > 2 || errors.length === 1) return "attentive";
+  return "serene";
+}
+
 export class EmbeddedJarvisPollinationsRuntime {
   private readonly cooldown = new PollinationsCooldownTracker();
 
@@ -153,6 +165,7 @@ export class EmbeddedJarvisPollinationsRuntime {
     auto: boolean;
     reason: string | null;
     includeAudio: boolean;
+    voiceOverride?: string | null;
     snapshot: EmbeddedJarvisSnapshot;
   }): Promise<EmbeddedJarvisRespondResult> {
     const prompt = input.prompt.trim() || "Give a concise workspace voice summary with one next action.";
@@ -160,6 +173,7 @@ export class EmbeddedJarvisPollinationsRuntime {
     let source: "api" | "fallback" = "api";
     let chatFailureKind: PollinationsFailureKind | null = null;
 
+    const personality = pickPersonalityFromEmbeddedSnapshot(input.snapshot);
     const chatState = this.cooldown.snapshot("chat");
     if (chatState.degraded && chatState.untilMs) {
       source = "fallback";
@@ -172,7 +186,7 @@ export class EmbeddedJarvisPollinationsRuntime {
       );
     } else {
       try {
-        text = await this.generateSummaryText(prompt, input.snapshot, input.auto);
+        text = await this.generateSummaryText(prompt, input.snapshot, input.auto, personality);
         this.cooldown.clear("chat");
       } catch (error) {
         const normalized = normalizePollinationsFailure(error, {
@@ -197,7 +211,7 @@ export class EmbeddedJarvisPollinationsRuntime {
       const speechState = this.cooldown.snapshot("speech");
       if (!speechState.degraded || !speechState.untilMs) {
         try {
-          const speech = await this.synthesizeSpeech(text);
+          const speech = await this.synthesizeSpeech(text, input.voiceOverride ?? null);
           audioBase64 = speech.audioBase64;
           mimeType = speech.mimeType;
           this.cooldown.clear("speech");
@@ -239,14 +253,14 @@ export class EmbeddedJarvisPollinationsRuntime {
     };
   }
 
-  private async generateSummaryText(prompt: string, snapshot: EmbeddedJarvisSnapshot, auto: boolean): Promise<string> {
+  private async generateSummaryText(prompt: string, snapshot: EmbeddedJarvisSnapshot, auto: boolean, personality: "serene" | "attentive" | "alert" | "escalating"): Promise<string> {
     const endpoint = this.endpoint("/v1/chat/completions");
     const configuredModel = asNonEmptyString(this.config.textModel) ?? "openai";
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
     try {
       try {
-        return await this.fetchSummaryText(endpoint, configuredModel, prompt, snapshot, auto, controller.signal);
+        return await this.fetchSummaryText(endpoint, configuredModel, prompt, snapshot, auto, personality, controller.signal);
       } catch (error) {
         let normalized = normalizePollinationsFailure(error, {
           endpoint,
@@ -255,7 +269,7 @@ export class EmbeddedJarvisPollinationsRuntime {
         });
         if (this.isRetryableChatFailure(normalized)) {
           try {
-            return await this.fetchSummaryText(endpoint, configuredModel, prompt, snapshot, auto, controller.signal);
+            return await this.fetchSummaryText(endpoint, configuredModel, prompt, snapshot, auto, personality, controller.signal);
           } catch (retryError) {
             normalized = normalizePollinationsFailure(retryError, {
               endpoint,
@@ -265,7 +279,7 @@ export class EmbeddedJarvisPollinationsRuntime {
           }
         }
         if (this.shouldRetryModel(normalized, configuredModel, "openai")) {
-          return await this.fetchSummaryText(endpoint, "openai", prompt, snapshot, auto, controller.signal);
+          return await this.fetchSummaryText(endpoint, "openai", prompt, snapshot, auto, personality, controller.signal);
         }
         throw normalized;
       }
@@ -274,14 +288,17 @@ export class EmbeddedJarvisPollinationsRuntime {
     }
   }
 
-  private async synthesizeSpeech(text: string): Promise<{ audioBase64: string; mimeType: string }> {
+  private async synthesizeSpeech(
+    text: string,
+    voiceOverride: string | null
+  ): Promise<{ audioBase64: string; mimeType: string }> {
     const endpoint = this.endpoint("/v1/audio/speech");
     const configuredModel = asNonEmptyString(this.config.speechModel) ?? "tts-1";
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
     try {
       try {
-        return await this.fetchSpeechAudio(endpoint, configuredModel, text, controller.signal);
+        return await this.fetchSpeechAudio(endpoint, configuredModel, text, voiceOverride, controller.signal);
       } catch (error) {
         let normalized = normalizePollinationsFailure(error, {
           endpoint,
@@ -290,7 +307,7 @@ export class EmbeddedJarvisPollinationsRuntime {
         });
         if (this.isTimeoutFailure(normalized)) {
           try {
-            return await this.fetchSpeechAudio(endpoint, configuredModel, text, controller.signal);
+            return await this.fetchSpeechAudio(endpoint, configuredModel, text, voiceOverride, controller.signal);
           } catch (retryError) {
             normalized = normalizePollinationsFailure(retryError, {
               endpoint,
@@ -300,7 +317,7 @@ export class EmbeddedJarvisPollinationsRuntime {
           }
         }
         if (this.shouldRetryModel(normalized, configuredModel, "tts-1")) {
-          return await this.fetchSpeechAudio(endpoint, "tts-1", text, controller.signal);
+          return await this.fetchSpeechAudio(endpoint, "tts-1", text, voiceOverride, controller.signal);
         }
         throw normalized;
       }
@@ -315,6 +332,7 @@ export class EmbeddedJarvisPollinationsRuntime {
     prompt: string,
     snapshot: EmbeddedJarvisSnapshot,
     auto: boolean,
+    personality: "serene" | "attentive" | "alert" | "escalating",
     signal: AbortSignal
   ): Promise<string> {
     let response: Response;
@@ -328,7 +346,7 @@ export class EmbeddedJarvisPollinationsRuntime {
           messages: [
             {
               role: "system",
-              content: "You are Jarvis voice supervisor. Return exactly 2-3 concise sentences. Do not invent data."
+              content: buildJarvisSystemPrompt(personality, auto)
             },
             {
               role: "user",
@@ -379,6 +397,7 @@ export class EmbeddedJarvisPollinationsRuntime {
     endpoint: string,
     model: string,
     text: string,
+    voiceOverride: string | null,
     signal: AbortSignal
   ): Promise<{ audioBase64: string; mimeType: string }> {
     let response: Response;
@@ -389,7 +408,7 @@ export class EmbeddedJarvisPollinationsRuntime {
         headers: this.buildHeaders(),
         body: JSON.stringify({
           model,
-          voice: this.config.voice,
+          voice: asNonEmptyString(voiceOverride) ?? this.config.voice,
           input: text,
           response_format: "mp3"
         })

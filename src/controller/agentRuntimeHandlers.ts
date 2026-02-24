@@ -174,7 +174,8 @@ export async function dispatchAgent(
 
   try {
     const workspaceContext = await resolveCurrentWorkspaceContext();
-    const transport = payload.transport ?? "unknown";
+    const transport = (payload.transport ?? "unknown").trim().toLowerCase();
+    const service = (payload.service ?? "").trim().toLowerCase() || (transport === "cloud" ? "copilot" : "codex");
     const localLikeTransport = transport === "local" || transport === "cli";
     const repository = localLikeTransport
       ? (payload.repository ?? workspaceContext?.repoSlug ?? null)
@@ -185,20 +186,39 @@ export async function dispatchAgent(
     const workspace = localLikeTransport
       ? (payload.workspace ?? workspaceContext?.workspace ?? defaultWorkspacePath())
       : (payload.workspace ?? null);
+    const issueNumber = Number.isInteger(payload.issueNumber) && Number(payload.issueNumber) > 0
+      ? Number(payload.issueNumber)
+      : null;
+    const issueNodeId = payload.issueNodeId?.trim() || null;
+
+    if (service === "codex" && !localLikeTransport) {
+      vscode.window.showWarningMessage("Codex dispatch requires transport=local or transport=cli.");
+      return;
+    }
+    if (service === "codex" && !workspace) {
+      vscode.window.showWarningMessage("Workspace path is required for Codex dispatch.");
+      return;
+    }
+    if (transport === "cloud" && service === "copilot" && !issueNumber) {
+      vscode.window.showWarningMessage("Issue number is required for Copilot cloud dispatch.");
+      return;
+    }
 
     await postSupervisorJson(deps, "/agents/dispatch", {
       sessionId: payload.sessionId ?? null,
       agentId,
       transport,
       summary: payload.summary ?? null,
-      service: payload.service?.trim() || null,
+      service,
       mode: payload.mode?.trim() || null,
       model: payload.model?.trim() || null,
       toolProfile: payload.toolProfile?.trim() || null,
       mcpTools: normalizeToolIds(payload.mcpTools),
       repository,
       branch,
-      workspace
+      workspace,
+      issueNumber,
+      issueNodeId
     });
     await deps.refreshNow("manual");
   } catch (error) {

@@ -39,6 +39,7 @@
     "onCommand:phoenixOps.openAgentWorkspace",
     "onCommand:phoenixOps.openSessionInEditor",
     "onCommand:phoenixOps.jarvisActivate",
+    "onCommand:phoenixOps.jarvisAuditionPersonalities",
     "onCommand:phoenixOps.jarvisToggleManualMode"
   ],
   "main": "./out/extension.js",
@@ -160,6 +161,10 @@
       {
         "command": "phoenixOps.jarvisActivate",
         "title": "Phoenix Ops: Ask Jarvis"
+      },
+      {
+        "command": "phoenixOps.jarvisAuditionPersonalities",
+        "title": "Phoenix Ops: Audition Jarvis Personalities"
       },
       {
         "command": "phoenixOps.jarvisToggleManualMode",
@@ -386,7 +391,7 @@
         },
         "phoenixOps.jarvisVoice": {
           "type": "string",
-          "default": "alloy",
+          "default": "onyx",
           "description": "Voice ID passed to Pollinations speech API."
         },
         "phoenixOps.jarvisMaxAnnouncementsPerHour": {
@@ -421,6 +426,13 @@
           "minimum": 15,
           "maximum": 1800,
           "description": "Cooldown after Pollinations timeout/network/server/unknown failures."
+        },
+        "phoenixOps.jarvisHostPlaybackSpacingMs": {
+          "type": "number",
+          "default": 600,
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "Milliseconds of silence inserted between queued Jarvis host-audio playback items."
         },
         "phoenixOps.jarvisOfferJokes": {
           "type": "boolean",

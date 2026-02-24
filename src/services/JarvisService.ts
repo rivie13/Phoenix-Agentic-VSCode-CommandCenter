@@ -124,26 +124,27 @@ export class JarvisService {
     }
   }
 
-  async synthesizeSpeech(text: string, settings: JarvisServiceSettings): Promise<JarvisSpeechResult> {
+  async synthesizeSpeech(text: string, settings: JarvisServiceSettings, ttsInstructions?: string): Promise<JarvisSpeechResult> {
     const endpoint = `${this.resolvedBaseUrl(settings)}/v1/audio/speech`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const instructions = ttsInstructions ?? "Speak with a sophisticated British accent. Your delivery is measured, calm, and carries a dry wit.";
 
     try {
       const configuredModel = asNonEmptyString(settings.speechModel) ?? "tts-1";
       try {
-        return await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, settings.apiKey, controller.signal);
+        return await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, instructions, settings.apiKey, controller.signal);
       } catch (error) {
         let normalized = this.toNormalizedError(error, endpoint, "speech");
         if (this.isTimeoutFailure(normalized)) {
           try {
-            return await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, settings.apiKey, controller.signal);
+            return await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, instructions, settings.apiKey, controller.signal);
           } catch (retryError) {
             normalized = this.toNormalizedError(retryError, endpoint, "speech");
           }
         }
         if (this.shouldRetryModel(normalized, configuredModel, "tts-1")) {
-          return await this.fetchSpeechAudio(endpoint, "tts-1", settings.voice, text, settings.apiKey, controller.signal);
+          return await this.fetchSpeechAudio(endpoint, "tts-1", settings.voice, text, instructions, settings.apiKey, controller.signal);
         }
         throw normalized;
       }
@@ -213,6 +214,7 @@ export class JarvisService {
     model: string,
     voice: string,
     text: string,
+    instructions: string,
     apiKey: string,
     signal: AbortSignal
   ): Promise<JarvisSpeechResult> {
@@ -226,6 +228,7 @@ export class JarvisService {
           model,
           voice,
           input: text,
+          instructions,
           response_format: "mp3"
         })
       });

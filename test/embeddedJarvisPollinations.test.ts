@@ -16,7 +16,7 @@ function makeRuntime(): EmbeddedJarvisPollinationsRuntime {
     apiKey: "test-key",
     textModel: "openai-large",
     speechModel: "openai-audio",
-    voice: "alloy",
+    voice: "onyx",
     hardCooldownSeconds: 900,
     softCooldownSeconds: 120
   });
@@ -132,5 +132,44 @@ describe("EmbeddedJarvisPollinationsRuntime", () => {
     expect(calls[1]?.url).toBe("https://gen.pollinations.ai/v1/audio/speech");
     expect(calls[1]?.body?.model).toBe("openai-audio");
     expect(calls[2]?.body?.model).toBe("tts-1");
+  });
+
+  it("uses voice override for speech synthesis when provided", async () => {
+    const calls: Array<{ url: unknown; body: Record<string, unknown> | null }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (input: unknown, init?: RequestInit) => {
+      let body: Record<string, unknown> | null = null;
+      if (init?.body && typeof init.body === "string") {
+        body = JSON.parse(init.body) as Record<string, unknown>;
+      }
+      calls.push({ url: input, body });
+
+      if (calls.length === 1) {
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: "Voice override summary." } }]
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+
+      return new Response(Buffer.from("audio-bytes"), {
+        status: 200,
+        headers: { "content-type": "audio/mpeg" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await makeRuntime().respond({
+      prompt: "Summarize current status.",
+      auto: false,
+      reason: "manual-request",
+      includeAudio: true,
+      voiceOverride: "onyx",
+      snapshot: makeSnapshot()
+    });
+
+    expect(result.source).toBe("api");
+    expect(result.audioBase64).toBeTruthy();
+    expect(calls[1]?.body?.voice).toBe("onyx");
   });
 });

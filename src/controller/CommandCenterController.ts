@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as vscode from "vscode";
 import type {
   ActionRunLogRequestPayload,
@@ -13,6 +15,7 @@ import type {
   JarvisFocusHint,
   JarvisSpeakPayload,
   JarvisStatePayload,
+  SupervisorJarvisRespondPayload,
   PullRequestInsightsRequestPayload,
   PullRequestOpenPayload,
   RetryActionRunPayload
@@ -44,7 +47,8 @@ import {
   resolveCurrentWorkspaceContext as resolveCurrentWorkspaceContextHandler,
   resolvePendingCommand as resolvePendingCommandHandler,
   sendAgentMessage as sendAgentMessageHandler,
-  stopAgent as stopAgentHandler
+  stopAgent as stopAgentHandler,
+  defaultWorkspacePath
 } from "./agentRuntimeHandlers";
 import {
   invalidateAgentModelCatalogCache as invalidateAgentModelCatalogCacheHandler,
@@ -99,6 +103,9 @@ import {
   StreamEnvelope
 } from "../types";
 import type { AgentModelCatalogPayload } from "../utils/agentModelCatalog";
+import { buildJarvisTtsInstructions } from "../utils/jarvisPrompts";
+import type { JarvisIdentity, JarvisPersonalityMode } from "../utils/jarvisPrompts";
+import { readJarvisIdentityFromDisk, writeJarvisIdentityToDisk } from "../utils/jarvisIdentity";
 import { applyStreamEnvelope } from "../utils/transform";
 
 const PROJECT_FIELD_NAMES: ProjectFieldName[] = ["Status", "Work mode", "Priority", "Size", "Area"];
@@ -107,6 +114,8 @@ const PINNED_SESSION_STORAGE_KEY = "phoenixOps.pinnedSessions";
 const ARCHIVED_SESSION_STORAGE_KEY = "phoenixOps.archivedSessions";
 const JARVIS_MANUAL_MODE_STORAGE_KEY = "phoenixOps.jarvisManualMode";
 const JARVIS_AUTO_LOOP_MS = 30_000;
+const ACTIONS_LOOKBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
+const JARVIS_AUDITION_PERSONALITIES: JarvisPersonalityMode[] = ["serene", "attentive", "alert", "escalating"];
 
 export class CommandCenterController implements vscode.Disposable {
   private readonly boardViewProvider: CommandCenterViewProvider;
@@ -143,6 +152,8 @@ export class CommandCenterController implements vscode.Disposable {
   private cachedAgentModelCatalog: AgentModelCatalogPayload | null = null;
   private cachedAgentModelCatalogExpiresAtMs = 0;
   private agentModelCatalogWarnedUntilMs = 0;
+  private jarvisIdentity: JarvisIdentity | null = null;
+  private readonly vscodeSessionStartedAtMs = Date.now();
   private pinnedSessionIds = new Set<string>();
   private archivedSessionIds = new Set<string>();
   private readonly sessionPanels = new Map<string, vscode.WebviewPanel>();
@@ -206,6 +217,7 @@ export class CommandCenterController implements vscode.Disposable {
     this.startStaleMonitor();
     this.startJarvisAutoLoop();
     await this.openAgentWorkspacePanel();
+    await this.loadJarvisIdentity();
     await this.sendJarvisStartupGreeting();
     this.logInfo("Initialization complete.");
   }
@@ -319,7 +331,7 @@ export class CommandCenterController implements vscode.Disposable {
     }
     const enteredVoice = await vscode.window.showInputBox({
       title: "Jarvis Voice ID",
-      prompt: "Voice ID sent to Pollinations speech API (for example: alloy).",
+      prompt: "Voice ID sent to Pollinations speech API (for example: alloy, onyx, brian, etc.).",
       value: settings.jarvisVoice,
       ignoreFocusOut: true
     });
@@ -331,7 +343,7 @@ export class CommandCenterController implements vscode.Disposable {
     const voice = enteredVoice.trim();
     await updatePhoenixSettings([
       ["jarvisSpeechModel", speechModel],
-      ["jarvisVoice", voice || "alloy"]
+      ["jarvisVoice", voice || "onyx"]
     ]);
     this.invalidateAgentModelCatalogCache();
     await this.postJarvisState();
@@ -483,13 +495,15 @@ export class CommandCenterController implements vscode.Disposable {
         reason: string;
         auto: boolean;
         focusHint: JarvisFocusHint | null;
+        personality?: JarvisPersonalityMode;
       }) => this.emitJarvisSpeech(input),
       refreshNow: async (reason: RefreshReason) => this.refreshNow(reason),
       tryJarvisDelegatedApproval: async (prompt: string, snapshot: DashboardSnapshot) =>
         this.tryJarvisDelegatedApproval(prompt, snapshot),
       showWarningMessage: (message: string) => {
         vscode.window.showWarningMessage(message);
-      }
+      },
+      getJarvisIdentity: () => this.jarvisIdentity
     };
   }
 
@@ -859,6 +873,146 @@ export class CommandCenterController implements vscode.Disposable {
     await this.activateJarvis(prompt.trim());
   }
 
+  async jarvisAuditionPersonalitiesCommand(): Promise<void> {
+    const settings = this.getRuntimeSettings();
+    if (!settings.jarvisEnabled) {
+      vscode.window.showWarningMessage("Jarvis is disabled. Enable phoenixOps.jarvisEnabled first.");
+      return;
+    }
+
+    const scriptInput = await vscode.window.showInputBox({
+      title: "Jarvis Personality Audition",
+      prompt: "Script Jarvis should read for each personality mode.",
+      value: "Phoenix operations check complete. Awaiting your next directive.",
+      ignoreFocusOut: true
+    });
+    if (scriptInput === undefined) {
+      return;
+    }
+    const auditionScript = scriptInput.trim() || "Phoenix operations check complete. Awaiting your next directive.";
+
+    const artifactsRoot = this.resolveJarvisAuditionArtifactsRoot();
+    if (!artifactsRoot) {
+      vscode.window.showWarningMessage("No workspace folder is available for saving Jarvis audition artifacts.");
+      return;
+    }
+
+    const supervisor = this.configuredSupervisorConnection();
+    if (!supervisor.baseUrl) {
+      vscode.window.showWarningMessage("Supervisor base URL is not configured. Set phoenixOps.supervisorBaseUrl first.");
+      return;
+    }
+
+    await this.ensureWorkspaceSupervisorStarted();
+    try {
+      await this.waitForSupervisorSnapshotReady(
+        supervisor.baseUrl,
+        supervisor.authToken,
+        Math.min(15_000, settings.workspaceSupervisorStartTimeoutMs)
+      );
+    } catch {
+      // Continue; the audition endpoint may still be reachable.
+    }
+
+    const runStamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const runDir = path.join(artifactsRoot, runStamp);
+    await fs.promises.mkdir(runDir, { recursive: true });
+
+    const results: Array<{
+      personality: JarvisPersonalityMode;
+      source: string;
+      text: string;
+      audioFilePath: string | null;
+      error: string | null;
+    }> = [];
+
+    await this.postStatus("Running Jarvis personality audition (serene, attentive, alert, escalating).", "ok");
+
+    for (let index = 0; index < JARVIS_AUDITION_PERSONALITIES.length; index += 1) {
+      const personality = JARVIS_AUDITION_PERSONALITIES[index];
+      try {
+        await this.postStatus(
+          `Jarvis audition ${index + 1}/${JARVIS_AUDITION_PERSONALITIES.length}: ${personality}`,
+          "warn"
+        );
+
+        const response = await this.requestJarvisRespondForAudition({
+          baseUrl: supervisor.baseUrl,
+          authToken: supervisor.authToken,
+          script: auditionScript,
+          personality,
+          model: settings.jarvisTextModel,
+          voice: settings.jarvisVoice
+        });
+
+        let audioFilePath: string | null = null;
+        if (response.audioBase64) {
+          audioFilePath = await this.writeJarvisAuditionAudio(runDir, index + 1, personality, response.mimeType, response.audioBase64);
+          await this.emitJarvisPayload(
+            {
+              text: `[audition:${personality}] ${response.text}`,
+              reason: `personality-audition-${personality}`,
+              auto: false,
+              focusHint: null,
+              mimeType: response.mimeType,
+              audioBase64: response.audioBase64
+            },
+            false
+          );
+        } else {
+          this.logWarn(`Jarvis audition (${personality}) returned no audio payload.`);
+        }
+
+        results.push({
+          personality,
+          source: response.source,
+          text: response.text,
+          audioFilePath,
+          error: null
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logWarn(`Jarvis audition (${personality}) failed: ${message}`);
+        results.push({
+          personality,
+          source: "error",
+          text: "",
+          audioFilePath: null,
+          error: message
+        });
+      }
+
+      await this.sleep(150);
+    }
+
+    const manifestPath = path.join(runDir, "manifest.json");
+    await fs.promises.writeFile(
+      manifestPath,
+      JSON.stringify(
+        {
+          generatedAt: new Date().toISOString(),
+          script: auditionScript,
+          supervisorBaseUrl: supervisor.baseUrl,
+          personalities: results
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const playable = results.filter((entry) => entry.audioFilePath).length;
+    await this.postStatus(`Jarvis audition complete. Saved ${playable}/${results.length} clips to ${runDir}.`, "ok");
+
+    const openChoice = await vscode.window.showInformationMessage(
+      `Jarvis personality audition complete. Saved clips to ${runDir}`,
+      "Open Folder"
+    );
+    if (openChoice === "Open Folder") {
+      await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(runDir));
+    }
+  }
+
   async jarvisToggleManualModeCommand(): Promise<void> {
     this.jarvisManualMode = !this.jarvisManualMode;
     await this.context.globalState.update(JARVIS_MANUAL_MODE_STORAGE_KEY, this.jarvisManualMode);
@@ -1023,6 +1177,49 @@ export class CommandCenterController implements vscode.Disposable {
     await activateJarvisHandler(this.jarvisInteractionHandlersDeps(), prompt);
   }
 
+  private async loadJarvisIdentity(): Promise<void> {
+    // Try loading from disk / env vars first
+    const stored = readJarvisIdentityFromDisk();
+    if (stored && stored.isIdentityComplete) {
+      this.jarvisIdentity = stored;
+      this.logInfo(`[Jarvis] Identity loaded: ${stored.name}`);
+      return;
+    }
+
+    // Ask once via VS Code input box — non-blocking, user can dismiss
+    const name = await vscode.window.showInputBox({
+      title: "Jarvis — Who are you?",
+      prompt: "What should Jarvis call you? (Press Escape to skip)",
+      placeHolder: "e.g. Alex",
+      ignoreFocusOut: true
+    });
+
+    if (!name || !name.trim()) {
+      this.logInfo("[Jarvis] Identity setup skipped — will address as 'sir'.");
+      this.jarvisIdentity = { name: null, preferredPronouns: "they/them", isIdentityComplete: false };
+      return;
+    }
+
+    const pronounChoice = await vscode.window.showQuickPick(
+      [
+        { label: "he/him", description: "He/Him" },
+        { label: "she/her", description: "She/Her" },
+        { label: "they/them", description: "They/Them (default)" },
+        { label: "other", description: "Prefer not to specify" }
+      ],
+      { title: `Nice to meet you, ${name.trim()}. How should Jarvis address you?`, ignoreFocusOut: true }
+    );
+
+    const identity: JarvisIdentity = {
+      name: name.trim(),
+      preferredPronouns: (pronounChoice?.label ?? "they/them") as JarvisIdentity["preferredPronouns"],
+      isIdentityComplete: true
+    };
+    this.jarvisIdentity = identity;
+    writeJarvisIdentityToDisk(identity);
+    this.logInfo(`[Jarvis] Identity saved: ${identity.name} (${identity.preferredPronouns})`);
+  }
+
   private async sendJarvisStartupGreeting(): Promise<void> {
     const settings = this.getRuntimeSettings();
     if (!settings.jarvisEnabled) {
@@ -1030,7 +1227,11 @@ export class CommandCenterController implements vscode.Disposable {
     }
 
     const workspaceName = vscode.workspace.name ?? "Phoenix Ops";
-    const startupPrompt = `Give a concise startup voice greeting for ${workspaceName}. Mention that you are monitoring sessions, approvals, and workflows, and offer one next action.`;
+    const identity = this.jarvisIdentity;
+    const nameClause = identity?.name ? `, ${identity.name}` : "";
+    const startupPrompt = identity?.name
+      ? `Give a concise British-accented startup greeting for ${workspaceName}, addressing ${identity.name} directly. Mention you are monitoring sessions, approvals, and workflows, and offer one next action.`
+      : `Give a concise startup voice greeting for ${workspaceName}. Mention that you are monitoring sessions, approvals, and workflows, and offer one next action.`;
     this.logInfo("Sending Jarvis startup greeting through workspace supervisor.");
     const fromSupervisor = await this.requestJarvisRespondFromSupervisor({
       prompt: startupPrompt,
@@ -1046,12 +1247,13 @@ export class CommandCenterController implements vscode.Disposable {
     }
 
     this.logWarn("Workspace supervisor startup greeting unavailable; falling back to local Jarvis runtime.");
-    const greeting = `Hello. Jarvis online for ${workspaceName}. I am monitoring sessions, approvals, and workflows; ask anytime for a full status callout.`;
+    const greeting = `Good day${nameClause}. Jarvis online for ${workspaceName}. I am monitoring sessions, approvals, and workflows — do ask whenever you need a full status briefing.`;
     await this.emitJarvisSpeech({
       text: greeting,
       reason: "startup-greeting",
       auto: false,
-      focusHint: null
+      focusHint: null,
+      personality: "serene"
     });
   }
 
@@ -1097,11 +1299,13 @@ export class CommandCenterController implements vscode.Disposable {
     this.jarvisLastReason = payload.reason;
     const webviewPayload: JarvisSpeakPayload = { ...payload };
     if (webviewPayload.audioBase64) {
+      const runtimeSettings = this.getRuntimeSettings();
       const queuedOnHost = this.jarvisHostAudioPlayer.enqueue({
         audioBase64: webviewPayload.audioBase64,
         mimeType: webviewPayload.mimeType,
         reason: webviewPayload.reason,
-        auto: webviewPayload.auto
+        auto: webviewPayload.auto,
+        spacingAfterMs: runtimeSettings.jarvisHostPlaybackSpacingMs
       });
       if (queuedOnHost) {
         webviewPayload.audioHandledByHost = true;
@@ -1136,6 +1340,7 @@ export class CommandCenterController implements vscode.Disposable {
     reason: string;
     auto: boolean;
     focusHint: JarvisFocusHint | null;
+    personality?: JarvisPersonalityMode;
   }): Promise<void> {
     const clean = input.text.trim();
     if (!clean) {
@@ -1144,11 +1349,12 @@ export class CommandCenterController implements vscode.Disposable {
 
     const settings = this.getRuntimeSettings();
     let speech: JarvisSpeechResult | null = null;
+    const ttsInstructions = buildJarvisTtsInstructions(input.personality ?? "attentive");
 
     const speechCooldown = this.jarvisPollinationsCooldown.snapshot("speech");
     if (!speechCooldown.degraded || !speechCooldown.untilMs) {
       try {
-        speech = await this.jarvisService.synthesizeSpeech(clean, this.getJarvisServiceSettings(settings));
+        speech = await this.jarvisService.synthesizeSpeech(clean, this.getJarvisServiceSettings(settings), ttsInstructions);
         this.clearPollinationsCooldown("speech");
       } catch (error) {
         this.notePollinationsFailure("speech", error, settings);
@@ -1165,6 +1371,138 @@ export class CommandCenterController implements vscode.Disposable {
     };
 
     await this.emitJarvisPayload(payload, true);
+  }
+
+  private async requestJarvisRespondForAudition(input: {
+    baseUrl: string;
+    authToken: string;
+    script: string;
+    personality: JarvisPersonalityMode;
+    model: string;
+    voice: string;
+  }): Promise<{
+    text: string;
+    source: string;
+    mimeType: string | null;
+    audioBase64: string | null;
+  }> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json"
+    };
+    if (input.authToken) {
+      headers.Authorization = `Bearer ${input.authToken}`;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const response = await fetch(`${input.baseUrl}/jarvis/respond`, {
+        method: "POST",
+        signal: controller.signal,
+        headers,
+        body: JSON.stringify({
+          sessionId: "jarvis-voice",
+          agentId: "Jarvis",
+          transport: "local",
+          prompt: `Voice audition. Return exactly this text with no extra words: \"${input.script}\"`,
+          reason: `personality-audition-${input.personality}`,
+          auto: false,
+          includeAudio: true,
+          personality: input.personality,
+          voice: input.voice,
+          service: "jarvis",
+          mode: "voice",
+          model: input.model,
+          workspace: defaultWorkspacePath(),
+          occurredAt: new Date().toISOString()
+        })
+      });
+
+      if (!response.ok) {
+        const details = await response.text();
+        throw new Error(`Supervisor /jarvis/respond failed (HTTP ${response.status})${details ? `: ${details}` : ""}`);
+      }
+
+      const raw = (await response.json()) as SupervisorJarvisRespondPayload;
+      if (raw.accepted === false) {
+        throw new Error("Supervisor /jarvis/respond rejected the request.");
+      }
+
+      const text = typeof raw.text === "string" ? raw.text.trim() : "";
+      if (!text) {
+        throw new Error("Supervisor /jarvis/respond returned no text.");
+      }
+
+      return {
+        text,
+        source: typeof raw.source === "string" ? raw.source : "unknown",
+        mimeType: typeof raw.mimeType === "string" ? raw.mimeType : null,
+        audioBase64: typeof raw.audioBase64 === "string" ? raw.audioBase64 : null
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  private resolveJarvisAuditionArtifactsRoot(): string | null {
+    const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+    if (workspaceFolders.length === 0) {
+      return null;
+    }
+
+    const preferred = workspaceFolders.find((folder) =>
+      path.basename(folder.uri.fsPath).toLowerCase() === "phoenix-agentic-vscode-commandcenter"
+    );
+    const basePath = preferred?.uri.fsPath ?? workspaceFolders[0]?.uri.fsPath;
+    if (!basePath) {
+      return null;
+    }
+
+    return path.join(basePath, "artifacts", "jarvis-auditions");
+  }
+
+  private async writeJarvisAuditionAudio(
+    runDir: string,
+    index: number,
+    personality: JarvisPersonalityMode,
+    mimeType: string | null,
+    audioBase64: string
+  ): Promise<string> {
+    const normalized = this.normalizeJarvisAudioBase64(audioBase64);
+    const bytes = Buffer.from(normalized, "base64");
+    if (!bytes.length) {
+      throw new Error(`Empty audio payload for personality ${personality}.`);
+    }
+
+    const extension = this.jarvisAudioExtensionFromMimeType(mimeType);
+    const fileName = `${String(index).padStart(2, "0")}-${personality}.${extension}`;
+    const filePath = path.join(runDir, fileName);
+    await fs.promises.writeFile(filePath, bytes);
+    return filePath;
+  }
+
+  private normalizeJarvisAudioBase64(input: string): string {
+    const trimmed = String(input || "").trim();
+    if (!trimmed) {
+      return "";
+    }
+    const separator = trimmed.indexOf(",");
+    const payload = separator >= 0 ? trimmed.slice(separator + 1) : trimmed;
+    return payload.replace(/\s+/g, "");
+  }
+
+  private jarvisAudioExtensionFromMimeType(mimeType: string | null): string {
+    const normalized = String(mimeType || "").toLowerCase();
+    if (normalized.includes("wav")) {
+      return "wav";
+    }
+    if (normalized.includes("ogg")) {
+      return "ogg";
+    }
+    if (normalized.includes("aac") || normalized.includes("m4a") || normalized.includes("mp4")) {
+      return "m4a";
+    }
+    return "mp3";
   }
 
   private pollinationsCooldownNotice(
@@ -1712,19 +2050,58 @@ export class CommandCenterController implements vscode.Disposable {
       };
     };
 
+    const runs = this.filterRunsToRecentWindow(raw.actions?.runs ?? []);
+    const runKeys = new Set(runs.map((run) => `${run.repo}::${run.id}`));
+    const jobs = (raw.actions?.jobs ?? []).filter((job) => runKeys.has(`${job.repo}::${job.runId}`));
+    const feed = this.filterFeedToCurrentSession(raw.agents?.feed ?? []);
+
     return {
       ...snapshot,
       actions: {
-        runs: raw.actions?.runs ?? [],
-        jobs: raw.actions?.jobs ?? [],
+        runs,
+        jobs,
         pullRequests: raw.actions?.pullRequests ?? []
       },
       agents: {
         sessions: raw.agents?.sessions ?? [],
-        feed: raw.agents?.feed ?? [],
+        feed,
         pendingCommands: raw.agents?.pendingCommands ?? []
       }
     };
+  }
+
+  private timestampMs(value: string | null | undefined): number {
+    const parsed = Date.parse(value ?? "");
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private runTimestampMs(run: DashboardSnapshot["actions"]["runs"][number]): number {
+    const updatedAtMs = this.timestampMs(run.updatedAt);
+    if (updatedAtMs > 0) {
+      return updatedAtMs;
+    }
+    return this.timestampMs(run.createdAt);
+  }
+
+  private filterRunsToRecentWindow(
+    runs: DashboardSnapshot["actions"]["runs"]
+  ): DashboardSnapshot["actions"]["runs"] {
+    const nowMs = Date.now();
+    const minTimestampMs = nowMs - ACTIONS_LOOKBACK_WINDOW_MS;
+    return runs
+      .filter((run) => {
+        const atMs = this.runTimestampMs(run);
+        return atMs >= minTimestampMs && atMs <= nowMs;
+      })
+      .sort((left, right) => this.runTimestampMs(right) - this.runTimestampMs(left));
+  }
+
+  private filterFeedToCurrentSession(
+    feed: DashboardSnapshot["agents"]["feed"]
+  ): DashboardSnapshot["agents"]["feed"] {
+    return feed
+      .filter((entry) => this.timestampMs(entry.occurredAt) >= this.vscodeSessionStartedAtMs)
+      .slice(-200);
   }
 
   private decorateSnapshot(snapshot: DashboardSnapshot): DashboardSnapshot {

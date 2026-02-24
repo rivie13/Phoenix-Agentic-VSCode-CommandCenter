@@ -31,6 +31,8 @@ export interface AgentDispatchPayload {
   repository?: string;
   branch?: string;
   workspace?: string;
+  issueNumber?: number | null;
+  issueNodeId?: string | null;
 }
 
 export interface PullRequestOpenPayload {
@@ -162,6 +164,7 @@ export interface JarvisSpeakPayload {
 export interface SupervisorJarvisRespondPayload {
   accepted?: unknown;
   source?: unknown;
+  personality?: unknown;
   text?: unknown;
   mimeType?: unknown;
   audioBase64?: unknown;

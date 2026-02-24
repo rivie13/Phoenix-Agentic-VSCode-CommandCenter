@@ -332,7 +332,7 @@ const state = {
     pullRequestCommentTarget: null
   },
   contextItems: Array.isArray(persisted.contextItems) ? persisted.contextItems : [],
-  chatLog: Array.isArray(persisted.chatLog) ? persisted.chatLog : []
+  chatLog: []
 };
 
 let jarvisAudioPlayer = null;
@@ -373,8 +373,7 @@ function persistUiState() {
     composeModel: state.compose.model,
     composeTool: state.compose.tool,
     composeMcpTools: state.compose.mcpTools,
-    contextItems: state.contextItems,
-    chatLog: state.chatLog.slice(-100)
+    contextItems: state.contextItems
   });
 }
 
@@ -678,6 +677,10 @@ function isNoisyChatFeedMessage(message) {
 }
 
 function parseFeedEntryForChat(entry) {
+  if (isJarvisFeedEntry(entry)) {
+    return null;
+  }
+
   const rawMessage = String(entry?.message || "").trim();
   if (isNoisyChatFeedMessage(rawMessage)) {
     return null;
@@ -703,6 +706,29 @@ function parseFeedEntryForChat(entry) {
 
   const displayText = role === "agent" ? `${entry.agentId}: ${text}` : text;
   return { role, displayText };
+}
+
+function isJarvisFeedEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return false;
+  }
+
+  const agentId = String(entry.agentId || "").trim().toLowerCase();
+  if (agentId.includes("jarvis")) {
+    return true;
+  }
+
+  const service = String(entry.service || "").trim().toLowerCase();
+  if (service === "jarvis") {
+    return true;
+  }
+
+  const mode = String(entry.mode || "").trim().toLowerCase();
+  if (mode === "jarvis") {
+    return true;
+  }
+
+  return false;
 }
 
 function getRuntimeModelCatalog() {
@@ -1266,7 +1292,6 @@ function handleJarvisSpeak(payload) {
     applyJarvisFocusHint(payload.focusHint);
   }
 
-  appendChatRow("system", `Jarvis: ${text}`, null);
   render();
   renderJarvisStatus();
 

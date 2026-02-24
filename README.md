@@ -128,7 +128,7 @@ After install, set these values for your environment:
 - `phoenixOps.jarvisApiKey` (Pollinations API key)
 - `phoenixOps.jarvisTextModel` (optional model for Jarvis text replies; leave empty for automatic selection)
 - `phoenixOps.jarvisSpeechModel` (optional OpenAI speech model for synthesis; leave empty for automatic selection)
-- `phoenixOps.jarvisVoice` (voice id, default `alloy`)
+- `phoenixOps.jarvisVoice` (voice id, default `onyx`) **USE ONYX INSTEAD OF ALLOY, WHICH I DO NOT LIKE, ALLOY IS DEFAULT**
 - `phoenixOps.jarvisMaxAnnouncementsPerHour` (default `12`)
 - `phoenixOps.jarvisMinSecondsBetweenAnnouncements` (default `180`)
 - `phoenixOps.jarvisReasonCooldownMinutes` (default `20`)

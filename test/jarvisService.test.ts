@@ -7,7 +7,7 @@ const settings = {
   apiKey: "test-key",
   textModel: "openai-large",
   speechModel: "openai-audio",
-  voice: "alloy"
+  voice: "onyx",
 };
 
 describe("JarvisService pollinations resilience", () => {

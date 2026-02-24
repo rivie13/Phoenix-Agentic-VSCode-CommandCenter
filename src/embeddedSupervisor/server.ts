@@ -116,6 +116,7 @@ interface JarvisRespondInput {
   transport?: string | null;
   prompt?: string | null;
   text?: string | null;
+  voice?: string | null;
   reason?: string | null;
   auto?: boolean;
   service?: string | null;
@@ -170,7 +171,7 @@ const jarvisTextModel = (process.env.PHOENIX_EMBEDDED_JARVIS_TEXT_MODEL ?? defau
 const defaultJarvisSpeechModel = jarvisApiKey ? "openai-audio" : "tts-1";
 const jarvisSpeechModel =
   (process.env.PHOENIX_EMBEDDED_JARVIS_SPEECH_MODEL ?? defaultJarvisSpeechModel).trim() || defaultJarvisSpeechModel;
-const jarvisVoice = (process.env.PHOENIX_EMBEDDED_JARVIS_VOICE ?? "alloy").trim() || "alloy";
+const jarvisVoice = (process.env.PHOENIX_EMBEDDED_JARVIS_VOICE ?? "onyx").trim() || "onyx";
 const jarvisHardCooldownSeconds = Math.min(1800, Math.max(30, Number(process.env.PHOENIX_EMBEDDED_JARVIS_HARD_COOLDOWN_SECONDS ?? 900)));
 const jarvisSoftCooldownSeconds = Math.min(1800, Math.max(15, Number(process.env.PHOENIX_EMBEDDED_JARVIS_SOFT_COOLDOWN_SECONDS ?? 120)));
 const MAX_AGENT_FEED = 500;
@@ -786,6 +787,7 @@ function parseJarvisRespond(
       reason: string | null;
       auto: boolean;
       includeAudio: boolean;
+      voiceOverride: string | null;
       sessionId: string;
       agentId: string;
       transport: AgentTransport;
@@ -811,12 +813,14 @@ function parseJarvisRespond(
   const transport = transportRaw === "unknown" ? "local" : transportRaw;
   const prompt = asString(raw.prompt) ?? asString(raw.text) ?? "Give a concise workspace voice summary with one next action.";
   const includeAudio = typeof raw.includeAudio === "boolean" ? raw.includeAudio : true;
+  const voiceOverride = asString(raw.voice);
   return {
     ok: true,
     prompt,
     reason: asString(raw.reason),
     auto: Boolean(raw.auto),
     includeAudio,
+    voiceOverride,
     sessionId,
     agentId,
     transport,
@@ -1221,6 +1225,7 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse): Promi
       auto: parsed.auto,
       reason: parsed.reason,
       includeAudio: parsed.includeAudio,
+      voiceOverride: parsed.voiceOverride,
       snapshot
     });
 

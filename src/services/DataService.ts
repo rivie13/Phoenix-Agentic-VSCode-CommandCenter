@@ -53,6 +53,7 @@ interface RuntimeSettings {
   jarvisReasonCooldownMinutes: number;
   jarvisPollinationsHardCooldownSeconds: number;
   jarvisPollinationsSoftCooldownSeconds: number;
+  jarvisHostPlaybackSpacingMs: number;
   jarvisOfferJokes: boolean;
   jarvisConversationHistoryTurns: number;
 }
@@ -113,6 +114,8 @@ interface PersistedCacheFile {
   actionsCache?: ActionsCacheState;
   pullRequestCache?: PullRequestCacheState;
 }
+
+const ACTIONS_LOOKBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export class DataService {
   private readonly gh: GhClient;
@@ -203,12 +206,13 @@ export class DataService {
     const jarvisSpeechModel = configuredJarvisSpeechModel.toLowerCase().includes("elevenlabs")
       ? jarvisDefaultSpeechModel
       : configuredJarvisSpeechModel;
-    const jarvisVoice = config.get<string>("jarvisVoice", "alloy").trim() || "alloy";
+    const jarvisVoice = config.get<string>("jarvisVoice", "onyx").trim() || "onyx";
     const jarvisMaxAnnouncementsPerHour = Math.min(20, Math.max(1, config.get<number>("jarvisMaxAnnouncementsPerHour", 12)));
     const jarvisMinSecondsBetweenAnnouncements = Math.max(30, config.get<number>("jarvisMinSecondsBetweenAnnouncements", 180));
     const jarvisReasonCooldownMinutes = Math.max(5, config.get<number>("jarvisReasonCooldownMinutes", 20));
     const jarvisPollinationsHardCooldownSeconds = Math.min(1800, Math.max(30, config.get<number>("jarvisPollinationsHardCooldownSeconds", 900)));
     const jarvisPollinationsSoftCooldownSeconds = Math.min(1800, Math.max(15, config.get<number>("jarvisPollinationsSoftCooldownSeconds", 120)));
+    const jarvisHostPlaybackSpacingMs = Math.max(0, Math.min(10_000, config.get<number>("jarvisHostPlaybackSpacingMs", 600)));
     const jarvisOfferJokes = config.get<boolean>("jarvisOfferJokes", true);
     const jarvisConversationHistoryTurns = Math.min(24, Math.max(2, config.get<number>("jarvisConversationHistoryTurns", 8)));
 
@@ -249,6 +253,7 @@ export class DataService {
       jarvisReasonCooldownMinutes,
       jarvisPollinationsHardCooldownSeconds,
       jarvisPollinationsSoftCooldownSeconds,
+      jarvisHostPlaybackSpacingMs,
       jarvisOfferJokes,
       jarvisConversationHistoryTurns
     };
@@ -736,7 +741,24 @@ export class DataService {
       throw new Error("Unable to load workflow runs from any configured repository.");
     }
 
-    const inspectRuns = runs
+    const nowMs = Date.now();
+    const minTimestampMs = nowMs - ACTIONS_LOOKBACK_WINDOW_MS;
+    const runTimestampMs = (run: ActionRun): number => {
+      const updatedAtMs = Date.parse(run.updatedAt);
+      if (Number.isFinite(updatedAtMs) && updatedAtMs > 0) {
+        return updatedAtMs;
+      }
+      const createdAtMs = Date.parse(run.createdAt);
+      return Number.isFinite(createdAtMs) ? createdAtMs : 0;
+    };
+    const recentRuns = runs
+      .filter((run) => {
+        const atMs = runTimestampMs(run);
+        return atMs >= minTimestampMs && atMs <= nowMs;
+      })
+      .sort((left, right) => runTimestampMs(right) - runTimestampMs(left));
+
+    const inspectRuns = recentRuns
       .filter((run) => run.status === "queued" || run.status === "in_progress" || isNeedsAttention(run.conclusion))
       .slice(0, 20);
 
@@ -794,7 +816,7 @@ export class DataService {
       }
     }
 
-    return { runs, jobs };
+    return { runs: recentRuns, jobs };
   }
 
   private async fetchPullRequests(repositories: string[]): Promise<PullRequestSummary[]> {

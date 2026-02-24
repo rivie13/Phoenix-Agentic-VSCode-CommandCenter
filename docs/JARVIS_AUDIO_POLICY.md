@@ -17,3 +17,10 @@
 - Host audio queue: `src/services/JarvisHostAudioPlayer.ts`
 - Jarvis payload routing: `src/controller/CommandCenterController.ts`
 - Webview receive handling: `media/webview.js`
+
+## Personality Audition Workflow
+
+- Command: `Phoenix Ops: Audition Jarvis Personalities`
+- Generation path: Supervisor `POST /jarvis/respond` with explicit `personality` override
+- Retention path: `artifacts/jarvis-auditions/<timestamp>/`
+- Playback path: host audio queue with configurable spacing (`phoenixOps.jarvisHostPlaybackSpacingMs`)
