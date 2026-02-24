@@ -1,4 +1,11 @@
 {
+  "phoenixOps.workspaceSupervisorRunBootstrapOnAutoStart": true,
+  "phoenixOps.openAgentWorkspaceOnStartup": true,
+  "phoenixOps.cliBootstrapOnStartup": true,
+  "phoenixOps.cliStartupSpawnPtyTerminals": true,
+  "phoenixOps.cliStartupAutoInstallMissing": true,
+  "phoenixOps.cliStartupAutoSignIn": true,
+  "phoenixOps.jarvisStartupGreetingOnStartup": true,
   "mcp.servers": {
     "phoenix-qa-handoff": {
       "command": "node",

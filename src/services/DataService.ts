@@ -26,7 +26,9 @@ interface RuntimeSettings {
   workspaceSupervisorAutoStart: boolean;
   workspaceSupervisorRepoPath: string;
   workspaceSupervisorStartTimeoutMs: number;
+  workspaceSupervisorRunBootstrapOnAutoStart: boolean;
   allowDirectGhPollingFallback: boolean;
+  openAgentWorkspaceOnStartup: boolean;
   repositoryDiscoveryMode: RepositoryDiscoveryMode;
   repositories: string[];
   boardCacheSeconds: number;
@@ -58,6 +60,7 @@ interface RuntimeSettings {
   agentModelCatalogAuthToken: string;
   jarvisEnabled: boolean;
   jarvisAutoAnnouncements: boolean;
+  jarvisStartupGreetingOnStartup: boolean;
   jarvisApiBaseUrl: string;
   jarvisApiKey: string;
   jarvisTextModel: string;
@@ -67,6 +70,7 @@ interface RuntimeSettings {
   jarvisGeminiApiKey: string;
   jarvisGeminiModel: string;
   jarvisGeminiVoice: string;
+  jarvisGeminiLiveModel: string;
   jarvisTtsDebug: boolean;
   jarvisMaxAnnouncementsPerHour: number;
   jarvisMinSecondsBetweenAnnouncements: number;
@@ -206,7 +210,9 @@ export class DataService {
       120_000,
       Math.max(5_000, config.get<number>("workspaceSupervisorStartTimeoutMs", 45_000))
     );
+    const workspaceSupervisorRunBootstrapOnAutoStart = config.get<boolean>("workspaceSupervisorRunBootstrapOnAutoStart", true);
     const allowDirectGhPollingFallback = config.get<boolean>("allowDirectGhPollingFallback", false);
+    const openAgentWorkspaceOnStartup = config.get<boolean>("openAgentWorkspaceOnStartup", true);
     const repositoryDiscoveryMode = config.get<RepositoryDiscoveryMode>("repositoryDiscoveryMode", "phoenixWorkspace");
     const configuredRepos = config.get<string[]>("repositories", []);
     const repositories = configuredRepos.length > 0 ? configuredRepos : inferRepositories(owner, repositoryDiscoveryMode);
@@ -245,6 +251,7 @@ export class DataService {
     const agentModelCatalogAuthToken = (explicitStringSetting("agentModelCatalogAuthToken") ?? "").trim();
     const jarvisEnabled = config.get<boolean>("jarvisEnabled", true);
     const jarvisAutoAnnouncements = config.get<boolean>("jarvisAutoAnnouncements", true);
+    const jarvisStartupGreetingOnStartup = config.get<boolean>("jarvisStartupGreetingOnStartup", true);
     const jarvisApiKey = (explicitStringSetting("jarvisApiKey") ?? "").trim();
     const jarvisApiBaseUrl = (explicitStringSetting("jarvisApiBaseUrl") ?? "").trim() ||
       (jarvisApiKey ? "https://gen.pollinations.ai" : "https://text.pollinations.ai/openai");
@@ -266,6 +273,9 @@ export class DataService {
     const jarvisGeminiApiKey = (explicitStringSetting("jarvisGeminiApiKey") ?? "").trim();
     const jarvisGeminiModel = (explicitStringSetting("jarvisGeminiModel") ?? "").trim() || "gemini-2.5-flash-preview-tts";
     const jarvisGeminiVoice = (explicitStringSetting("jarvisGeminiVoice") ?? "").trim() || "Charon";
+    const jarvisGeminiLiveModel =
+      (explicitStringSetting("jarvisGeminiLiveModel") ?? "").trim() ||
+      "gemini-2.5-flash-native-audio-preview-12-2025";
     const jarvisTtsDebug = config.get<boolean>("jarvisTtsDebug", false);
     const jarvisMaxAnnouncementsPerHour = Math.min(20, Math.max(1, config.get<number>("jarvisMaxAnnouncementsPerHour", 12)));
     const jarvisMinSecondsBetweenAnnouncements = Math.max(30, config.get<number>("jarvisMinSecondsBetweenAnnouncements", 180));
@@ -286,7 +296,9 @@ export class DataService {
       workspaceSupervisorAutoStart,
       workspaceSupervisorRepoPath,
       workspaceSupervisorStartTimeoutMs,
+      workspaceSupervisorRunBootstrapOnAutoStart,
       allowDirectGhPollingFallback,
+      openAgentWorkspaceOnStartup,
       repositoryDiscoveryMode,
       repositories,
       boardCacheSeconds,
@@ -318,6 +330,7 @@ export class DataService {
       agentModelCatalogAuthToken,
       jarvisEnabled,
       jarvisAutoAnnouncements,
+      jarvisStartupGreetingOnStartup,
       jarvisApiBaseUrl,
       jarvisApiKey,
       jarvisTextModel,
@@ -327,6 +340,7 @@ export class DataService {
       jarvisGeminiApiKey,
       jarvisGeminiModel,
       jarvisGeminiVoice,
+      jarvisGeminiLiveModel,
       jarvisTtsDebug,
       jarvisMaxAnnouncementsPerHour,
       jarvisMinSecondsBetweenAnnouncements,

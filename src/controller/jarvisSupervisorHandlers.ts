@@ -5,6 +5,7 @@ import type {
   SupervisorJarvisRespondPayload
 } from "./CommandCenterPayloads";
 import { defaultWorkspacePath } from "./agentRuntimeHandlers";
+import type { DashboardSnapshot } from "../types";
 
 type StatusLevel = "ok" | "warn" | "err";
 
@@ -20,6 +21,7 @@ interface RequestJarvisRespondInput {
 export interface JarvisSupervisorHandlersDeps {
   getDataSettings: () => ReturnType<DataService["getSettings"]>;
   getRuntimeSettings: () => ReturnType<DataService["getSettings"]>;
+  getSnapshot: () => DashboardSnapshot | null;
   configuredSupervisorConnection: () => { baseUrl: string; authToken: string };
   isLocalSupervisorBaseUrl: (baseUrl: string) => boolean;
   ensureWorkspaceSupervisorStarted: () => Promise<void>;
@@ -31,6 +33,80 @@ export interface JarvisSupervisorHandlersDeps {
   emitJarvisPayload: (payload: JarvisSpeakPayload, forwardToSupervisor: boolean) => Promise<void>;
   clearPollinationsCooldown: (channel: "chat" | "speech") => void;
   rememberJarvisTurn: (role: "user" | "assistant", content: string, maxTurns: number) => void;
+}
+
+interface JarvisRespondContextPayload {
+  operatorSummary: string | null;
+  focusHint: string | null;
+  pendingApprovals: string[];
+  notableEvents: string[];
+}
+
+function asTimestamp(value: string | null | undefined): number {
+  if (!value) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function clip(value: string | null | undefined, maxLength: number): string {
+  if (!value) {
+    return "";
+  }
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+  return `${compact.slice(0, Math.max(1, maxLength - 3)).trimEnd()}...`;
+}
+
+function buildJarvisRespondContext(
+  snapshot: DashboardSnapshot | null,
+  prompt: string,
+  reason: string,
+  auto: boolean,
+  focusHint: JarvisFocusHint | null
+): JarvisRespondContextPayload | null {
+  if (!snapshot) {
+    return {
+      operatorSummary: auto
+        ? `Automatic callout request (${reason}).`
+        : `Manual operator prompt: ${clip(prompt, 200)}`,
+      focusHint: focusHint ? `${focusHint.kind}:${focusHint.id} ${focusHint.label}` : null,
+      pendingApprovals: [],
+      notableEvents: []
+    };
+  }
+
+  const pendingApprovals = snapshot.agents.pendingCommands
+    .filter((command) => command.status === "pending")
+    .sort((left, right) => asTimestamp(right.updatedAt) - asTimestamp(left.updatedAt))
+    .slice(0, 6)
+    .map((command) => {
+      const reasonText = clip(command.reason, 100);
+      return `${command.agentId} [${command.risk}] ${clip(command.command, 80)}${reasonText ? ` (${reasonText})` : ""}`;
+    });
+
+  const notableEvents = [...snapshot.agents.feed]
+    .sort((left, right) => asTimestamp(right.occurredAt) - asTimestamp(left.occurredAt))
+    .slice(0, 10)
+    .map((entry) => `[${entry.level}] ${entry.agentId}: ${clip(entry.message, 140)}`);
+
+  const context: JarvisRespondContextPayload = {
+    operatorSummary: auto
+      ? `Automatic callout request (${reason}).`
+      : `Manual operator prompt: ${clip(prompt, 200)}`,
+    focusHint: focusHint ? `${focusHint.kind}:${focusHint.id} ${focusHint.label}` : null,
+    pendingApprovals,
+    notableEvents
+  };
+
+  if (!context.operatorSummary && !context.focusHint && context.pendingApprovals.length === 0 && context.notableEvents.length === 0) {
+    return null;
+  }
+
+  return context;
 }
 
 function shouldRetryJarvisRespondHttp(status: number): boolean {
@@ -66,6 +142,7 @@ export async function requestJarvisRespondFromSupervisor(
   }
 
   const maxAttempts = retryableStartup ? 2 : 1;
+  const context = buildJarvisRespondContext(deps.getSnapshot(), prompt, input.reason, input.auto, input.focusHint);
   const requestBody = {
     sessionId: "jarvis-voice",
     agentId: "Jarvis",
@@ -77,12 +154,13 @@ export async function requestJarvisRespondFromSupervisor(
     service: "jarvis",
     mode: "voice",
     model: settings.jarvisTextModel,
+    context,
     workspace: defaultWorkspacePath(),
     occurredAt: new Date().toISOString()
   };
 
   deps.logInfo(
-    `Posting /jarvis/respond (reason=${input.reason}, auto=${input.auto}, promptChars=${prompt.length}, attempts=${maxAttempts}).`
+    `Posting /jarvis/respond (reason=${input.reason}, auto=${input.auto}, promptChars=${prompt.length}, context=${context ? "yes" : "no"}, attempts=${maxAttempts}).`
   );
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {

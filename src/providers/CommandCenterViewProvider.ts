@@ -82,6 +82,7 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
     const nonce = createNonce();
     const scriptUris = [
       webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "node_modules", "@xterm", "xterm", "lib", "xterm.js")),
+      webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "node_modules", "@xterm", "addon-fit", "lib", "addon-fit.js")),
       "webview.js",
       "webview.issue-forms.js",
       "webview.actions.js",
@@ -582,76 +583,6 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
         </summary>
         <div class="foldout-body">
           <div id="agentTerminalMount" class="agent-terminal-mount"></div>
-        </div>
-      </details>
-      <details id="agentChatSection" class="panel foldout chat-foldout" open>
-        <summary class="foldout-summary">
-          <span class="lane-title">Agent Chat</span>
-          <span class="meta-line" id="selectedSessionMeta">No session selected.</span>
-        </summary>
-        <div class="foldout-body">
-          <div class="chat-toolbar">
-            <button id="stopSessionFromChatButton" class="lane-action" type="button">Stop</button>
-            <span id="chatSessionStats" class="meta-line secondary">No active session stats.</span>
-          </div>
-          <div id="chatTimeline" class="chat-timeline"></div>
-        </div>
-      </details>
-      <details id="agentComposerSection" class="panel foldout composer-foldout" open>
-        <summary class="foldout-summary">
-          <span class="lane-title">Chat Input and Context</span>
-          <span class="meta-line">Composer</span>
-        </summary>
-        <div class="foldout-body">
-          <div id="chatComposer" class="chat-composer">
-            <div class="composer-context-row">
-              <button id="toggleContextPickerButton" class="context-pill-button">Add Context...</button>
-              <div id="chatContextChips" class="context-chips"></div>
-            </div>
-            <div id="contextPickerPanel" class="context-picker-panel">
-              <div class="inline-actions">
-                <button id="addContextFileButton">Active File</button>
-                <button id="addContextSelectionButton">Selection</button>
-                <button id="addContextWorkspaceFileButton">Workspace File</button>
-              </div>
-            </div>
-            <div class="field" style="margin-top: 8px;">
-              <textarea id="agentMessageInput" rows="3" placeholder="Describe what to build next"></textarea>
-            </div>
-            <div class="composer-controls">
-              <select id="composerTransportSelect" class="composer-select" title="Runtime">
-                <option value="local">Local</option>
-                <option value="cli">CLI</option>
-                <option value="cloud">Cloud</option>
-              </select>
-              <select id="composerModeSelect" class="composer-select" title="Mode">
-                <option value="agent">Agent</option>
-                <option value="ask">Ask</option>
-                <option value="plan">Plan</option>
-              </select>
-              <select id="composerServiceSelect" class="composer-select" title="Service">
-                <option value="codex">Codex</option>
-                <option value="copilot">Copilot</option>
-              </select>
-              <select id="composerModelSelect" class="composer-select" title="Model"></select>
-              <select id="composerEffortSelect" class="composer-select" title="Reasoning strength"></select>
-              <select id="composerToolSelect" class="composer-select" title="Tool">
-                <option value="auto">Tools: Auto</option>
-                <option value="repo">Tools: Repo</option>
-                <option value="terminal">Tools: Terminal</option>
-              </select>
-              <select id="composerMcpToolsSelect" class="composer-select composer-mcp-select" title="MCP Tools" multiple size="4"></select>
-            </div>
-            <div id="composerCloudControls" class="composer-cloud-controls">
-              <input id="composerIssueNumberInput" class="composer-select" type="number" min="1" step="1" placeholder="Issue #" />
-              <input id="composerIssueNodeIdInput" class="composer-select" type="text" placeholder="Issue Node ID (optional)" />
-              <div id="composerCloudStatus" class="meta-line secondary"></div>
-            </div>
-            <div class="composer-actions">
-              <button id="stopSessionFromComposerButton" class="composer-stop-button" title="Stop session">Stop</button>
-              <button id="sendAgentMessageButton" class="composer-send-button" title="Send">Send</button>
-            </div>
-          </div>
         </div>
       </details>
     </div>

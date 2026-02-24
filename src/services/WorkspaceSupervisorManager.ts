@@ -8,6 +8,7 @@ export interface WorkspaceSupervisorConfig {
   apiToken: string;
   repoPath: string;
   startTimeoutMs: number;
+  runBootstrapOnAutoStart: boolean;
   codexCliPath: string;
   copilotCliPath: string;
   claudeCliPath: string;
@@ -21,6 +22,7 @@ export interface WorkspaceSupervisorConfig {
   jarvisGeminiApiKey: string;
   jarvisGeminiModel: string;
   jarvisGeminiVoice: string;
+  jarvisGeminiLiveModel: string;
   jarvisTtsDebug: boolean;
   jarvisHardCooldownSeconds: number;
   jarvisSoftCooldownSeconds: number;
@@ -211,16 +213,31 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
 
     const distServerPath = path.join(repoPath, "dist", "server.js");
     const useDist = fs.existsSync(distServerPath);
-    const command = useDist ? process.execPath : (process.platform === "win32" ? "npm.cmd" : "npm");
-    const args = useDist ? [distServerPath] : ["run", "dev"];
+    const tsxCliPath = path.join(repoPath, "node_modules", ".bin", process.platform === "win32" ? "tsx.cmd" : "tsx");
+    const useTsx = !useDist && fs.existsSync(tsxCliPath);
+    const command = useDist
+      ? process.execPath
+      : useTsx
+        ? tsxCliPath
+        : (process.platform === "win32" ? "npm.cmd" : "npm");
+    const args = useDist
+      ? [distServerPath]
+      : useTsx
+        ? [path.join("src", "server.ts")]
+        : ["run", "dev"];
+    const launchMode = useDist ? "dist" : (useTsx ? "tsx" : "dev-watch");
 
-    this.log(`Starting workspace supervisor (${useDist ? "dist" : "dev"}) at ${repoPath}`);
+    this.log(`Starting workspace supervisor (${launchMode}) at ${repoPath}`);
     this.log(`Launch command: ${command} ${args.join(" ")}`);
+    if (!useDist && !useTsx) {
+      this.log("Falling back to npm watch mode because tsx executable was not found in node_modules/.bin.");
+    }
     this.log(
       `Jarvis env: baseUrl=${config.jarvisApiBaseUrl || "(auto)"} apiKeyConfigured=${Boolean(config.jarvisApiKey)} ` +
       `textModel=${config.jarvisTextModel || "(auto)"} speechModel=${config.jarvisSpeechModel || "(auto)"} voice=${config.jarvisVoice || "onyx"} ` +
       `ttsProvider=${config.jarvisTtsProvider} geminiKeyConfigured=${Boolean(config.jarvisGeminiApiKey)} ` +
-      `geminiModel=${config.jarvisGeminiModel || "(auto)"} geminiVoice=${config.jarvisGeminiVoice || "Charon"}`
+      `geminiModel=${config.jarvisGeminiModel || "(auto)"} geminiVoice=${config.jarvisGeminiVoice || "Charon"} ` +
+      `geminiLiveModel=${config.jarvisGeminiLiveModel || "(auto)"}`
     );
     this.log(
       `CLI env: codex=${config.codexCliPath || "codex"} copilot=${config.copilotCliPath || "copilot"} ` +
@@ -234,6 +251,9 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
         SUPERVISOR_HOST: target.host,
         SUPERVISOR_PORT: String(target.port),
         SUPERVISOR_API_TOKEN: config.apiToken,
+        SUPERVISOR_BOOTSTRAP_ENABLED: config.runBootstrapOnAutoStart ? "1" : "0",
+        SUPERVISOR_BOOTSTRAP_STRICT: config.runBootstrapOnAutoStart ? (process.env.SUPERVISOR_BOOTSTRAP_STRICT ?? "1") : "0",
+        SUPERVISOR_BOOTSTRAP_TUNNEL_MODE: config.runBootstrapOnAutoStart ? (process.env.SUPERVISOR_BOOTSTRAP_TUNNEL_MODE ?? "cloudflared") : "none",
         CODEX_CLI_CMD: config.codexCliPath,
         COPILOT_CLI_CMD: config.copilotCliPath,
         CLAUDE_CLI_CMD: config.claudeCliPath,
@@ -247,6 +267,7 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
         SUPERVISOR_JARVIS_GEMINI_API_KEY: config.jarvisGeminiApiKey,
         SUPERVISOR_JARVIS_GEMINI_MODEL: config.jarvisGeminiModel,
         SUPERVISOR_JARVIS_GEMINI_VOICE: config.jarvisGeminiVoice,
+        SUPERVISOR_JARVIS_GEMINI_LIVE_MODEL: config.jarvisGeminiLiveModel,
         SUPERVISOR_JARVIS_TTS_DEBUG: config.jarvisTtsDebug ? "1" : "0",
         SUPERVISOR_JARVIS_HARD_COOLDOWN_SECONDS: String(config.jarvisHardCooldownSeconds),
         SUPERVISOR_JARVIS_SOFT_COOLDOWN_SECONDS: String(config.jarvisSoftCooldownSeconds)
@@ -278,8 +299,10 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
     while (Date.now() - startedAt < timeoutMs) {
       attempts += 1;
 
-      const health = await this.checkHealth(baseUrl, token);
-      const snapshot = await this.checkSnapshot(baseUrl, token);
+      const [health, snapshot] = await Promise.all([
+        this.checkHealth(baseUrl, token),
+        this.checkSnapshot(baseUrl, token)
+      ]);
       if (snapshot.ok && health.ok) {
         this.log(`Workspace supervisor is ready at ${baseUrl} after ${attempts} checks (${Date.now() - startedAt}ms).`);
         return;

@@ -82,6 +82,78 @@ function resolveTerminalConstructor() {
   return null;
 }
 
+function resolveFitAddonConstructor() {
+  if (window.FitAddon && typeof window.FitAddon.FitAddon === "function") {
+    return window.FitAddon.FitAddon;
+  }
+  return null;
+}
+
+function resolveCssVariable(name, fallback) {
+  const style = window.getComputedStyle(document.documentElement);
+  const value = style.getPropertyValue(name);
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  return fallback;
+}
+
+function resolveTerminalTheme() {
+  return {
+    foreground: resolveCssVariable("--vscode-terminal-foreground", "#d4d4d4"),
+    background: resolveCssVariable("--vscode-terminal-background", "#1e1e1e"),
+    cursor: resolveCssVariable("--vscode-terminal-cursorForeground", "#aeafad"),
+    selectionBackground: resolveCssVariable("--vscode-terminal-selectionBackground", "#264f78"),
+    black: resolveCssVariable("--vscode-terminal-ansiBlack", "#000000"),
+    red: resolveCssVariable("--vscode-terminal-ansiRed", "#cd3131"),
+    green: resolveCssVariable("--vscode-terminal-ansiGreen", "#0dbc79"),
+    yellow: resolveCssVariable("--vscode-terminal-ansiYellow", "#e5e510"),
+    blue: resolveCssVariable("--vscode-terminal-ansiBlue", "#2472c8"),
+    magenta: resolveCssVariable("--vscode-terminal-ansiMagenta", "#bc3fbc"),
+    cyan: resolveCssVariable("--vscode-terminal-ansiCyan", "#11a8cd"),
+    white: resolveCssVariable("--vscode-terminal-ansiWhite", "#e5e5e5"),
+    brightBlack: resolveCssVariable("--vscode-terminal-ansiBrightBlack", "#666666"),
+    brightRed: resolveCssVariable("--vscode-terminal-ansiBrightRed", "#f14c4c"),
+    brightGreen: resolveCssVariable("--vscode-terminal-ansiBrightGreen", "#23d18b"),
+    brightYellow: resolveCssVariable("--vscode-terminal-ansiBrightYellow", "#f5f543"),
+    brightBlue: resolveCssVariable("--vscode-terminal-ansiBrightBlue", "#3b8eea"),
+    brightMagenta: resolveCssVariable("--vscode-terminal-ansiBrightMagenta", "#d670d6"),
+    brightCyan: resolveCssVariable("--vscode-terminal-ansiBrightCyan", "#29b8db"),
+    brightWhite: resolveCssVariable("--vscode-terminal-ansiBrightWhite", "#e5e5e5")
+  };
+}
+
+function resolveTerminalFontFamily() {
+  return resolveCssVariable("--vscode-editor-font-family", "Consolas, 'Courier New', monospace");
+}
+
+function fitTerminalInstance(instance) {
+  if (!instance?.wrapper || !instance?.terminal) {
+    return;
+  }
+
+  if (instance.fitAddon && typeof instance.fitAddon.fit === "function") {
+    try {
+      instance.fitAddon.fit();
+      return;
+    } catch {
+      // Fall through to approximate resize.
+    }
+  }
+
+  const rect = instance.wrapper.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0 || typeof instance.terminal.resize !== "function") {
+    return;
+  }
+  const estimatedCols = Math.max(40, Math.floor(rect.width / 9));
+  const estimatedRows = Math.max(8, Math.floor(rect.height / 18));
+  try {
+    instance.terminal.resize(estimatedCols, estimatedRows);
+  } catch {
+    // No-op
+  }
+}
+
 function readTerminalBuffer(sessionId) {
   if (!sessionId) {
     return "";
@@ -133,24 +205,50 @@ function ensureTerminalInstance(sessionId, mount) {
   wrapper.className = "agent-terminal-shell";
   wrapper.dataset.sessionId = sessionId;
   wrapper.style.display = "none";
+  wrapper.tabIndex = -1;
   mount.appendChild(wrapper);
 
   const TerminalCtor = resolveTerminalConstructor();
   if (!TerminalCtor) {
     wrapper.textContent = "xterm.js unavailable in this webview session.";
-    const fallback = { terminal: null, wrapper, inputSubscription: null };
+    const fallback = {
+      terminal: null,
+      wrapper,
+      inputSubscription: null,
+      fitAddon: null,
+      resizeObserver: null,
+      focusListener: null
+    };
     terminalInstances.set(sessionId, fallback);
     return fallback;
   }
+
+  const FitAddonCtor = resolveFitAddonConstructor();
+  const fitAddon = FitAddonCtor ? new FitAddonCtor() : null;
 
   const terminal = new TerminalCtor({
     cursorBlink: true,
     convertEol: false,
     scrollback: 6000,
-    fontSize: 12,
-    fontFamily: "monospace"
+    fontSize: 13,
+    fontFamily: resolveTerminalFontFamily(),
+    theme: resolveTerminalTheme()
   });
+
+  if (fitAddon && typeof terminal.loadAddon === "function") {
+    try {
+      terminal.loadAddon(fitAddon);
+    } catch {
+      // No-op
+    }
+  }
+
   terminal.open(wrapper);
+  const focusListener = () => {
+    state.terminal.attachedSessionId = sessionId;
+    terminal.focus();
+  };
+  wrapper.addEventListener("pointerdown", focusListener);
   terminal.write(readTerminalBuffer(sessionId));
 
   const inputSubscription = terminal.onData((data) => {
@@ -164,7 +262,26 @@ function ensureTerminalInstance(sessionId, mount) {
     });
   });
 
-  const instance = { terminal, wrapper, inputSubscription };
+  const instance = {
+    terminal,
+    wrapper,
+    inputSubscription,
+    fitAddon,
+    resizeObserver: null,
+    focusListener
+  };
+
+  if (typeof ResizeObserver === "function") {
+    const resizeObserver = new ResizeObserver(() => {
+      if (state.terminal.attachedSessionId === sessionId) {
+        fitTerminalInstance(instance);
+      }
+    });
+    resizeObserver.observe(wrapper);
+    instance.resizeObserver = resizeObserver;
+  }
+
+  fitTerminalInstance(instance);
   terminalInstances.set(sessionId, instance);
   return instance;
 }
@@ -181,6 +298,18 @@ function cleanupTerminalInstances(activeSessionIds) {
     }
     try {
       instance.inputSubscription?.dispose?.();
+    } catch {
+      // No-op
+    }
+    try {
+      instance.resizeObserver?.disconnect?.();
+    } catch {
+      // No-op
+    }
+    try {
+      if (instance.focusListener) {
+        instance.wrapper?.removeEventListener?.("pointerdown", instance.focusListener);
+      }
     } catch {
       // No-op
     }
@@ -248,6 +377,12 @@ function renderTerminalPanel() {
       continue;
     }
     candidate.wrapper.style.display = candidateSessionId === sessionId ? "block" : "none";
+  }
+
+  if (instance?.terminal) {
+    requestAnimationFrame(() => {
+      fitTerminalInstance(instance);
+    });
   }
 
   state.terminal.attachedSessionId = sessionId;

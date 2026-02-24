@@ -567,21 +567,29 @@ button:disabled {
 .agent-terminal-mount {
   border: 1px solid color-mix(in srgb, var(--vscode-input-border) 75%, transparent 25%);
   border-radius: 8px;
-  min-height: 180px;
-  height: clamp(220px, 36vh, 520px);
+  min-height: 260px;
+  height: clamp(320px, 52vh, 820px);
+  min-width: 0;
   overflow: hidden;
+  position: relative;
   background: color-mix(in srgb, var(--vscode-editor-background) 92%, #101820 8%);
 }
 
 .agent-terminal-shell {
   width: 100%;
   height: 100%;
-  padding: 6px;
+  padding: 0;
+  min-width: 0;
 }
 
 .agent-terminal-shell .xterm {
   width: 100%;
   height: 100%;
+  padding: 8px;
+}
+
+.agent-terminal-shell .xterm-viewport {
+  overflow-y: auto !important;
 }
 
 .chat-composer {
@@ -1261,24 +1269,24 @@ body.agent-only .agent-pane {
   height: 100%;
 }
 
-body.agent-only #agentChatSection {
+body.agent-only #agentTerminalSection {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  min-height: 220px;
+  min-height: 300px;
 }
 
-body.agent-only #agentChatSection > .foldout-body {
+body.agent-only #agentTerminalSection > .foldout-body {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 
-body.agent-only #agentChatSection .chat-timeline {
+body.agent-only #agentTerminalSection .agent-terminal-mount {
   flex: 1 1 auto;
-  max-height: none;
-  min-height: 240px;
+  height: clamp(380px, 64vh, 980px);
+  min-height: 320px;
 }
 
 body.agent-only .context-picker-panel .inline-actions {

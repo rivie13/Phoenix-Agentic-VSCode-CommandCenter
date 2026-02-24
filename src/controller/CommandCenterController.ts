@@ -145,6 +145,10 @@ const JARVIS_STARTUP_PRIOR_SUMMARY_COUNT = 3;
 type StartupTerminalService = CliAuthService | "claude" | "gemini";
 const STARTUP_TERMINAL_SERVICES: readonly StartupTerminalService[] = ["codex", "copilot", "claude", "gemini"];
 const AUTH_TRACKED_STARTUP_SERVICES: readonly CliAuthService[] = ["codex", "copilot"];
+const STARTUP_INIT_BLOCKING_BUDGET_MS = 1500;
+const STARTUP_CLI_BOOTSTRAP_DEFER_MS = 2500;
+const STARTUP_INSTALL_ATTEMPT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const STARTUP_SIGNIN_ATTEMPT_COOLDOWN_MS = 30 * 60 * 1000;
 
 export class CommandCenterController implements vscode.Disposable {
   private readonly boardViewProvider: CommandCenterViewProvider;
@@ -199,6 +203,7 @@ export class CommandCenterController implements vscode.Disposable {
   private pendingBoardUiAction: PendingBoardUiAction | null = null;
   private startupCliBootstrapInFlight = false;
   private startupCliBootstrapDone = false;
+  private startupCliBootstrapTimer: NodeJS.Timeout | null = null;
   private lastPostedAuthPayload = "";
 
   constructor(
@@ -228,12 +233,21 @@ export class CommandCenterController implements vscode.Disposable {
     this.logInfo("Initializing Phoenix Ops Command Center.");
     this.loadSessionPreferences();
     this.jarvisManualMode = this.context.globalState.get<boolean>(JARVIS_MANUAL_MODE_STORAGE_KEY, false);
-    await this.ensureWorkspaceSupervisorStarted();
-    await this.ensureEmbeddedSupervisorStarted();
+    const workspaceSupervisorStartTask = this.ensureWorkspaceSupervisorStarted();
+    const embeddedSupervisorStartTask = this.ensureEmbeddedSupervisorStarted();
+    const authTask = this.dataService.checkGhAuth();
 
-    const auth = await this.dataService.checkGhAuth();
+    await Promise.race([
+      Promise.all([workspaceSupervisorStartTask, embeddedSupervisorStartTask]),
+      this.sleep(STARTUP_INIT_BLOCKING_BUDGET_MS)
+    ]);
+
+    const auth = await authTask;
     this.ghAuthOk = auth.ok;
-    await this.refreshCliAuthStatus(["codex", "copilot"]);
+    void this.refreshCliAuthStatus(["codex", "copilot"]).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logWarn(`startup cli auth refresh failed: ${message}`);
+    });
     await this.postAuthState();
     if (!auth.ok) {
       const signInChoice = await vscode.window.showWarningMessage(
@@ -261,10 +275,37 @@ export class CommandCenterController implements vscode.Disposable {
     }
     this.startStaleMonitor();
     this.startJarvisAutoLoop();
-    await this.openAgentWorkspacePanel();
-    await this.loadJarvisIdentity();
-    await this.sendJarvisStartupGreeting();
-    void this.bootstrapCliRuntimeOnStartup();
+
+    void Promise.allSettled([workspaceSupervisorStartTask, embeddedSupervisorStartTask]).then(() => {
+      if (this.disposed) {
+        return;
+      }
+      const runtimeSettings = this.getRuntimeSettings();
+      if (this.embeddedSupervisorBaseUrl && runtimeSettings.useSupervisorStream) {
+        void this.syncEmbeddedSupervisorNow("startup");
+        this.startEmbeddedSupervisorSyncLoop();
+      }
+      void this.tryStartSupervisorStream();
+      void this.refreshNow("manual");
+    });
+
+    const startupSettings = this.getRuntimeSettings();
+    if (startupSettings.openAgentWorkspaceOnStartup) {
+      void this.openAgentWorkspacePanel().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logWarn(`openAgentWorkspaceOnStartup failed: ${message}`);
+      });
+    }
+    if (startupSettings.jarvisStartupGreetingOnStartup) {
+      void (async () => {
+        await this.loadJarvisIdentity(false);
+        await this.sendJarvisStartupGreeting();
+      })().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logWarn(`jarvisStartupGreetingOnStartup failed: ${message}`);
+      });
+    }
+    this.scheduleStartupCliBootstrap();
     this.logInfo("Initialization complete.");
   }
 
@@ -631,6 +672,7 @@ export class CommandCenterController implements vscode.Disposable {
     return {
       getDataSettings: () => this.dataService.getSettings(),
       getRuntimeSettings: () => this.getRuntimeSettings(),
+      getSnapshot: () => this.snapshot,
       configuredSupervisorConnection: () => this.configuredSupervisorConnection(),
       isLocalSupervisorBaseUrl: (baseUrl: string) => this.isLocalSupervisorBaseUrl(baseUrl),
       ensureWorkspaceSupervisorStarted: async () => this.ensureWorkspaceSupervisorStarted(),
@@ -1072,6 +1114,9 @@ export class CommandCenterController implements vscode.Disposable {
   }
 
   async jarvisActivateCommand(): Promise<void> {
+    if (!this.jarvisIdentity?.isIdentityComplete) {
+      await this.loadJarvisIdentity(true);
+    }
     const prompt = await vscode.window.showInputBox({
       title: "Ask Jarvis",
       prompt: "Ask for a status report, session summary, joke, or approval action",
@@ -1278,6 +1323,7 @@ export class CommandCenterController implements vscode.Disposable {
         apiToken: settings.supervisorAuthToken,
         repoPath: settings.workspaceSupervisorRepoPath,
         startTimeoutMs: settings.workspaceSupervisorStartTimeoutMs,
+        runBootstrapOnAutoStart: settings.workspaceSupervisorRunBootstrapOnAutoStart,
         codexCliPath: settings.codexCliPath,
         copilotCliPath: settings.copilotCliPath,
         claudeCliPath: settings.claudeCliPath,
@@ -1291,6 +1337,7 @@ export class CommandCenterController implements vscode.Disposable {
         jarvisGeminiApiKey: settings.jarvisGeminiApiKey,
         jarvisGeminiModel: settings.jarvisGeminiModel,
         jarvisGeminiVoice: settings.jarvisGeminiVoice,
+        jarvisGeminiLiveModel: settings.jarvisGeminiLiveModel,
         jarvisTtsDebug: settings.jarvisTtsDebug,
         jarvisHardCooldownSeconds: settings.jarvisPollinationsHardCooldownSeconds,
         jarvisSoftCooldownSeconds: settings.jarvisPollinationsSoftCooldownSeconds
@@ -1437,12 +1484,18 @@ export class CommandCenterController implements vscode.Disposable {
     await activateJarvisHandler(this.jarvisInteractionHandlersDeps(), prompt);
   }
 
-  private async loadJarvisIdentity(): Promise<void> {
+  private async loadJarvisIdentity(interactive = true): Promise<void> {
     // Try loading from disk / env vars first
     const stored = readJarvisIdentityFromDisk();
     if (stored && stored.isIdentityComplete) {
       this.jarvisIdentity = stored;
       this.logInfo(`[Jarvis] Identity loaded: ${stored.name}`);
+      return;
+    }
+
+    if (!interactive) {
+      this.jarvisIdentity = { name: null, preferredPronouns: "they/them", isIdentityComplete: false };
+      this.logInfo("[Jarvis] Identity prompt skipped during startup — defaulting to neutral form.");
       return;
     }
 
@@ -1968,6 +2021,10 @@ export class CommandCenterController implements vscode.Disposable {
       clearInterval(this.jarvisAutoTimer);
       this.jarvisAutoTimer = null;
     }
+    if (this.startupCliBootstrapTimer) {
+      clearTimeout(this.startupCliBootstrapTimer);
+      this.startupCliBootstrapTimer = null;
+    }
     if (this.embeddedSupervisorSyncTimer) {
       clearInterval(this.embeddedSupervisorSyncTimer);
       this.embeddedSupervisorSyncTimer = null;
@@ -2449,6 +2506,26 @@ export class CommandCenterController implements vscode.Disposable {
     return service === "codex" ? "codex login" : "copilot login";
   }
 
+  private startupInstallAttemptStorageKey(service: StartupTerminalService): string {
+    return `phoenixOps.startupCli.installAttemptAt.${service}`;
+  }
+
+  private startupSignInAttemptStorageKey(service: CliAuthService): string {
+    return `phoenixOps.startupCli.signInAttemptAt.${service}`;
+  }
+
+  private startupAttemptWithinCooldown(storageKey: string, cooldownMs: number): boolean {
+    const attemptedAt = this.context.globalState.get<number>(storageKey, 0);
+    if (attemptedAt <= 0) {
+      return false;
+    }
+    return Date.now() - attemptedAt < cooldownMs;
+  }
+
+  private async markStartupAttempt(storageKey: string): Promise<void> {
+    await this.context.globalState.update(storageKey, Date.now());
+  }
+
   private isCliCommandAvailable(configuredCommand: string, fallbackCommand: string): boolean {
     const invocation = parseCliInvocation(configuredCommand, fallbackCommand);
     const executable = invocation.command.trim();
@@ -2469,16 +2546,35 @@ export class CommandCenterController implements vscode.Disposable {
     }
   }
 
-  private launchCliInstallTerminal(service: StartupTerminalService, command: string): void {
+  private launchCliInstallTerminal(service: StartupTerminalService, command: string): boolean {
     const trimmed = command.trim();
     if (!trimmed) {
-      return;
+      return false;
     }
+
+    const terminalName = `Phoenix Ops: Install ${this.startupServiceLabel(service)} CLI`;
+    if (vscode.window.terminals.some((terminal) => terminal.name === terminalName)) {
+      this.logInfo(`startup auto-install skipped for ${service}: install terminal already exists (${terminalName}).`);
+      return false;
+    }
+
     const terminal = vscode.window.createTerminal({
-      name: `Phoenix Ops: Install ${this.startupServiceLabel(service)} CLI`
+      name: terminalName
     });
     terminal.show(false);
     terminal.sendText(trimmed, true);
+    return true;
+  }
+
+  private scheduleStartupCliBootstrap(): void {
+    if (this.startupCliBootstrapTimer || this.startupCliBootstrapDone || this.startupCliBootstrapInFlight || this.disposed) {
+      return;
+    }
+
+    this.startupCliBootstrapTimer = setTimeout(() => {
+      this.startupCliBootstrapTimer = null;
+      void this.bootstrapCliRuntimeOnStartup();
+    }, STARTUP_CLI_BOOTSTRAP_DEFER_MS);
   }
 
   private async ensureStartupPtyTerminal(service: StartupTerminalService): Promise<void> {
@@ -2552,14 +2648,23 @@ export class CommandCenterController implements vscode.Disposable {
             continue;
           }
 
+          const installAttemptKey = this.startupInstallAttemptStorageKey(service);
+          if (this.startupAttemptWithinCooldown(installAttemptKey, STARTUP_INSTALL_ATTEMPT_COOLDOWN_MS)) {
+            this.logInfo(`startup auto-install skipped for ${service}: cooldown active.`);
+            continue;
+          }
+
           const installCommand = this.startupServiceInstallCommand(service, settings);
           if (!installCommand.trim()) {
             this.logWarn(`startup auto-install skipped for ${service}: no install command configured.`);
             continue;
           }
 
-          this.launchCliInstallTerminal(service, installCommand);
-          await this.postStatus(`${this.startupServiceLabel(service)} CLI not found. Started install command in terminal.`, "warn");
+          const launched = this.launchCliInstallTerminal(service, installCommand);
+          await this.markStartupAttempt(installAttemptKey);
+          if (launched) {
+            await this.postStatus(`${this.startupServiceLabel(service)} CLI not found. Started install command in terminal.`, "warn");
+          }
         }
       }
 
@@ -2575,6 +2680,12 @@ export class CommandCenterController implements vscode.Disposable {
         const status = this.resolveCliAuthStateForWebview(service);
 
         if (settings.cliStartupAutoSignIn && (status.state === "signed-out" || status.state === "unknown")) {
+          const signInAttemptKey = this.startupSignInAttemptStorageKey(service);
+          if (this.startupAttemptWithinCooldown(signInAttemptKey, STARTUP_SIGNIN_ATTEMPT_COOLDOWN_MS)) {
+            this.logInfo(`startup sign-in skipped for ${service}: cooldown active.`);
+            continue;
+          }
+
           const startupSessionId = this.startupTerminalSessionId(service);
           if (!this.canSendTerminalInput(startupSessionId)) {
             this.logWarn(`startup sign-in skipped for ${service}: startup terminal session is not ready.`);
@@ -2583,11 +2694,11 @@ export class CommandCenterController implements vscode.Disposable {
 
           const signInCommand = this.startupServiceSignInCommand(service);
           await this.sendStartupTerminalCommand(service, signInCommand);
+          await this.markStartupAttempt(signInAttemptKey);
           await this.postStatus(`Startup sign-in command sent for ${service}.`, "warn");
         }
       }
 
-      await this.refreshNow("manual");
       await this.refreshCliAuthStatus([...AUTH_TRACKED_STARTUP_SERVICES]);
       this.startupCliBootstrapDone = true;
     } catch (error) {

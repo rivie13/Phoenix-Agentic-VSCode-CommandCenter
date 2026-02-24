@@ -290,6 +290,16 @@ Selection file accepted formats:
 - JSON array: `["ann_attentive_03.wav", "ack_serene_01.wav"]`
 - JSON object with arrays in `files`, `onlyFiles`, `include`, `selection`, or `items`
 
+Default template path (generated from latest full run inventory):
+
+`artifacts/jarvis-canned-barks/redo-selection.txt`
+
+Template behavior:
+
+- missing clips from the last run are preselected (uncommented)
+- all other clips are commented with `#`
+- to regenerate a clip, remove the leading `# ` and keep one filename per line
+
 API key resolution order:
 
 1. `--api-key`
@@ -311,3 +321,9 @@ For easier review and keeper selection, generated clips can be organized into mo
 	- `ann_attentive_04.wav`
 	- `ann_attentive_05.wav`
 	- `ann_attentive_06.wav`
+
+## 7. Live API Migration Notes
+
+For the evaluation and migration recommendation to Gemini native audio sessions, see:
+
+`docs/JARVIS_LIVE_API_EVALUATION.md`

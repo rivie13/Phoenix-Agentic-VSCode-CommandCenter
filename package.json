@@ -235,10 +235,20 @@
           "maximum": 120000,
           "description": "How long to wait for workspace supervisor startup health checks."
         },
+        "phoenixOps.workspaceSupervisorRunBootstrapOnAutoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "When auto-starting Workspace Supervisor from this extension, allow supervisor startup bootstrap (secret/tunnel/webhook flow). Keep off for faster local startup."
+        },
         "phoenixOps.embeddedSupervisorEnabled": {
           "type": "boolean",
           "default": false,
           "description": "Run the bundled embedded supervisor sidecar. Keep disabled to use the Workspace Supervisor repo as primary control plane."
+        },
+        "phoenixOps.openAgentWorkspaceOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically reveal the Agent Workspace panel on extension activation."
         },
         "phoenixOps.embeddedSupervisorHost": {
           "type": "string",
@@ -454,6 +464,11 @@
           "default": true,
           "description": "Allow scheduled Jarvis automatic callouts based on supervisor state."
         },
+        "phoenixOps.jarvisStartupGreetingOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Have Jarvis speak an activation greeting during extension startup."
+        },
         "phoenixOps.jarvisApiBaseUrl": {
           "type": "string",
           "default": "",
@@ -503,6 +518,11 @@
           "type": "string",
           "default": "Charon",
           "description": "Gemini prebuilt voice name used for Jarvis TTS."
+        },
+        "phoenixOps.jarvisGeminiLiveModel": {
+          "type": "string",
+          "default": "gemini-2.5-flash-native-audio-preview-12-2025",
+          "description": "Gemini Live model used for Supervisor-managed direct context+audio Jarvis responses."
         },
         "phoenixOps.jarvisTtsDebug": {
           "type": "boolean",
@@ -575,13 +595,14 @@
     "jarvis:generate:barks:organized": "node ./scripts/jarvis-generate-canned-barks-gemini.mjs --organize"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.10",
-    "@types/ws": "^8.5.12",
     "@types/vscode": "^1.109.0",
+    "@types/ws": "^8.5.12",
     "@vscode/vsce": "^3.6.0",
     "typescript": "^5.7.3",
     "vitest": "^4.0.18"

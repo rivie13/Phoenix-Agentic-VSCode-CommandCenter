@@ -51,6 +51,7 @@ See:
 
 - `docs/ARCHITECTURE.md`
 - `docs/JARVIS_AUDIO_POLICY.md`
+- `docs/JARVIS_LIVE_API_EVALUATION.md`
 - `docs/DEPLOYMENT_MODES.md`
 - `docs/WEBHOOK_SETUP.md`
 - `docs/MARKETPLACE_ROADMAP.md`
@@ -103,12 +104,14 @@ After install, set these values for your environment:
 - `phoenixOps.workspaceSupervisorAutoStart` (default `true`; auto-start local Workspace Supervisor repo server for `supervisorBaseUrl`)
 - `phoenixOps.workspaceSupervisorRepoPath` (optional path to `Phoenix-Agentic-Workspace-Supervisor`; auto-discovered when empty)
 - `phoenixOps.workspaceSupervisorStartTimeoutMs` (default `45000`)
+- `phoenixOps.workspaceSupervisorRunBootstrapOnAutoStart` (default `true`; extension-started supervisor also runs tunnel/webhook bootstrap)
 - `phoenixOps.embeddedSupervisorEnabled` (default `false`; optional bundled local supervisor sidecar)
 - `phoenixOps.embeddedSupervisorHost` (default `127.0.0.1`)
 - `phoenixOps.embeddedSupervisorPort` (default `8789`)
 - `phoenixOps.embeddedSupervisorApiToken` (optional local token)
 - `phoenixOps.useSupervisorStream` (default `true`)
 - `phoenixOps.allowDirectGhPollingFallback` (default `false`)
+- `phoenixOps.openAgentWorkspaceOnStartup` (default `true`; reveal the right-side Agent panel on activation)
 - `phoenixOps.refreshSeconds` (default `30`)
 - `phoenixOps.boardCacheSeconds` (default `120`)
 - `phoenixOps.actionsCacheSeconds` (default `120`)
@@ -120,10 +123,10 @@ After install, set these values for your environment:
 - `phoenixOps.copilotCliAuthCommand` (terminal command used for Copilot CLI auth)
 - `phoenixOps.codexCliPath` (Codex CLI command/path surfaced for supervisor runtime alignment)
 - `phoenixOps.copilotCliPath` (Copilot CLI command/path surfaced for supervisor runtime alignment)
-- `phoenixOps.cliBootstrapOnStartup` (auto bootstrap CLI runtime at extension startup)
-- `phoenixOps.cliStartupSpawnPtyTerminals` (spawn startup PTY terminal sessions for available CLIs)
-- `phoenixOps.cliStartupAutoInstallMissing` (attempt CLI install when unavailable)
-- `phoenixOps.cliStartupAutoSignIn` (trigger sign-in when CLI auth is missing)
+- `phoenixOps.cliBootstrapOnStartup` (default `true`; auto bootstrap CLI runtime at extension startup)
+- `phoenixOps.cliStartupSpawnPtyTerminals` (default `true`; spawn startup PTY terminal sessions for available CLIs)
+- `phoenixOps.cliStartupAutoInstallMissing` (default `true`; attempt CLI install when unavailable)
+- `phoenixOps.cliStartupAutoSignIn` (default `true`; trigger sign-in when CLI auth is missing)
 - `phoenixOps.codexCliInstallCommand` (startup install command for Codex CLI)
 - `phoenixOps.copilotCliInstallCommand` (startup install command for Copilot CLI)
 - `phoenixOps.codexDefaultModel` (optional default Codex model for dispatch)
@@ -136,6 +139,7 @@ After install, set these values for your environment:
 - `phoenixOps.mcpToolOptions` (MCP tool IDs shown in composer selector)
 - `phoenixOps.jarvisEnabled` (enable/disable Jarvis features)
 - `phoenixOps.jarvisAutoAnnouncements` (automatic supervisor-style callouts)
+- `phoenixOps.jarvisStartupGreetingOnStartup` (default `true`; speak Jarvis greeting at activation)
 - `phoenixOps.jarvisApiBaseUrl` (optional Pollinations OpenAI-compatible base URL; leave empty for automatic selection)
 - `phoenixOps.jarvisApiKey` (Pollinations API key)
 - `phoenixOps.jarvisTextModel` (optional model for Jarvis text replies; leave empty for automatic selection)
@@ -201,7 +205,7 @@ Keyboard shortcuts:
 
 Jarvis startup + wake word:
 
-- On extension activation, Jarvis posts a startup greeting.
+- When `phoenixOps.jarvisStartupGreetingOnStartup=true` (default), Jarvis posts a startup greeting on extension activation.
 - Startup greeting is derived from Command Center's live filtered snapshot (extension context), not supervisor cached `/jarvis/respond` context.
 - Jarvis keeps per-VSCode-session memory in extension global storage (`phoenix-jarvis-session-memory.json`), including ordered user/Jarvis turns and a compact session summary.
 - Cross-session carryover is intentionally light: startup may include only the last few completed session summaries (currently 3).
@@ -210,6 +214,8 @@ Jarvis startup + wake word:
 - Jarvis now builds Pollinations text prompts from prioritized session highlights, pending approvals, PR review pressure, and recent session feed excerpts before any voice call.
 - Speech generation is a second step that voices the generated text summary (or local fallback summary when degraded).
 - Pollinations degradation now uses channel-specific cooldowns (chat/speech) with single warning per cooldown window and local fallback summaries when API calls are paused.
+- Startup CLI bootstrap remains enabled, but install/sign-in retries are now throttled and deduplicated to avoid terminal storms across repeated VS Code restarts.
+- Extension activation now uses a short startup warm-up budget so supervisor/auth bootstrap continues in the background while the UI becomes responsive sooner.
 - Jarvis voice playback only uses AI-generated audio payloads and explicitly forbids browser `speechSynthesis` fallback.
 - When webview autoplay is blocked by browser policy, Command Center queues host-native playback in extension host so supervisor announcements still play without a click.
 - Jarvis speech events are forwarded best-effort to supervisor `POST /jarvis/speak` so voice announcements appear in agent session/feed telemetry.

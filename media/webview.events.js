@@ -595,6 +595,9 @@ function bindEvents() {
     agentTerminalSection.addEventListener("toggle", () => {
       state.ui.terminalSectionOpen = agentTerminalSection.open;
       persistUiState();
+      if (typeof renderTerminalPanel === "function") {
+        renderTerminalPanel();
+      }
     });
   }
   if (agentChatSection instanceof HTMLDetailsElement) {
