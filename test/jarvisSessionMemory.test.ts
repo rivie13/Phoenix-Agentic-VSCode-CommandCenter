@@ -9,6 +9,7 @@ import {
   buildJarvisStartupGreeting,
   createJarvisSessionMemoryStore,
   listRecentJarvisSessionSummaries,
+  listRecentStartupAgentSessionSummaries,
   loadJarvisSessionMemory,
   persistJarvisSessionMemory,
   upsertJarvisSessionMemory
@@ -261,6 +262,93 @@ describe("jarvisSessionMemory", () => {
     expect(summaries).toHaveLength(2);
     expect(summaries[0]).toContain("Session B");
     expect(summaries[1]).toContain("Session A");
+  });
+
+  it("lists only non-Jarvis recent startup agent sessions", () => {
+    const snapshot = createSnapshot();
+    snapshot.agents.sessions.push(
+      {
+        sessionId: "s3",
+        agentId: "Jarvis",
+        transport: "local",
+        status: "online",
+        summary: "meta session",
+        service: "jarvis",
+        mode: "voice",
+        model: "openai",
+        toolProfile: null,
+        mcpTools: [],
+        workspace: "C:/workspace",
+        repository: "rivie13/Phoenix-Agentic-VSCode-CommandCenter",
+        branch: "main",
+        startedAt: "2026-02-23T12:00:00.000Z",
+        lastHeartbeat: "2026-02-23T12:04:00.000Z",
+        updatedAt: "2026-02-23T12:04:00.000Z"
+      },
+      {
+        sessionId: "s4",
+        agentId: "Claude Code",
+        transport: "cli",
+        status: "busy",
+        summary: "Reviewing PR comments",
+        service: "claude",
+        mode: null,
+        model: "claude-3.7-sonnet",
+        toolProfile: null,
+        mcpTools: [],
+        workspace: "C:/workspace",
+        repository: "rivie13/Phoenix-Agentic-VSCode-CommandCenter",
+        branch: "main",
+        startedAt: "2026-02-23T12:00:00.000Z",
+        lastHeartbeat: "2026-02-23T12:04:00.000Z",
+        updatedAt: "2026-02-23T12:04:00.000Z"
+      },
+      {
+        sessionId: "s5",
+        agentId: "Gemini CLI",
+        transport: "cli",
+        status: "idle",
+        summary: "Ready",
+        service: "gemini",
+        mode: null,
+        model: "gemini-2.5-pro",
+        toolProfile: null,
+        mcpTools: [],
+        workspace: "C:/workspace",
+        repository: "rivie13/Phoenix-Agentic-VSCode-CommandCenter",
+        branch: "main",
+        startedAt: "2026-02-23T12:00:00.000Z",
+        lastHeartbeat: "2026-02-23T12:05:00.000Z",
+        updatedAt: "2026-02-23T12:05:00.000Z"
+      },
+      {
+        sessionId: "s6",
+        agentId: "Ralph",
+        transport: "cli",
+        status: "online",
+        summary: "Internal helper",
+        service: "ralph",
+        mode: null,
+        model: "internal",
+        toolProfile: null,
+        mcpTools: [],
+        workspace: "C:/workspace",
+        repository: "rivie13/Phoenix-Agentic-VSCode-CommandCenter",
+        branch: "main",
+        startedAt: "2026-02-23T12:00:00.000Z",
+        lastHeartbeat: "2026-02-23T12:06:00.000Z",
+        updatedAt: "2026-02-23T12:06:00.000Z"
+      }
+    );
+
+    const summaries = listRecentStartupAgentSessionSummaries(snapshot, 3);
+
+    expect(summaries).toHaveLength(3);
+    expect(summaries[0]).toContain("Gemini");
+    expect(summaries[1]).toContain("Claude Code");
+    expect(summaries[2]).toContain("Copilot");
+    expect(summaries.join(" ")).not.toContain("Jarvis");
+    expect(summaries.join(" ")).not.toContain("Ralph");
   });
 
   it("persists and reloads memory store", () => {

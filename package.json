@@ -334,6 +334,16 @@
           "default": "copilot",
           "description": "Path or command name used by supervisor for Copilot CLI launches."
         },
+        "phoenixOps.claudeCliPath": {
+          "type": "string",
+          "default": "claude",
+          "description": "Path or command name used by supervisor for Claude Code CLI launches."
+        },
+        "phoenixOps.geminiCliPath": {
+          "type": "string",
+          "default": "gemini",
+          "description": "Path or command name used by supervisor for Gemini CLI launches."
+        },
         "phoenixOps.cliBootstrapOnStartup": {
           "type": "boolean",
           "default": true,
@@ -347,7 +357,7 @@
         "phoenixOps.cliStartupAutoInstallMissing": {
           "type": "boolean",
           "default": true,
-          "description": "Attempt to install missing Codex/Copilot CLI tools at startup using configured install commands."
+          "description": "Attempt to install missing Codex/Copilot/Claude/Gemini CLI tools at startup using configured install commands."
         },
         "phoenixOps.cliStartupAutoSignIn": {
           "type": "boolean",
@@ -363,6 +373,16 @@
           "type": "string",
           "default": "npm install -g @github/copilot",
           "description": "Command used to install Copilot CLI when unavailable during startup bootstrap."
+        },
+        "phoenixOps.claudeCliInstallCommand": {
+          "type": "string",
+          "default": "npm install -g @anthropic-ai/claude-code",
+          "description": "Command used to install Claude Code CLI when unavailable during startup bootstrap."
+        },
+        "phoenixOps.geminiCliInstallCommand": {
+          "type": "string",
+          "default": "npm install -g @google/gemini-cli",
+          "description": "Command used to install Gemini CLI when unavailable during startup bootstrap."
         },
         "phoenixOps.codexDefaultModel": {
           "type": "string",
@@ -550,7 +570,9 @@
     "lint": "tsc -p ./ --noEmit",
     "test": "vitest run",
     "verify": "npm run lint && npm run test && npm run compile",
-    "package:vsix": "npx @vscode/vsce package"
+    "package:vsix": "npx @vscode/vsce package",
+    "jarvis:generate:barks": "node ./scripts/jarvis-generate-canned-barks-gemini.mjs",
+    "jarvis:generate:barks:organized": "node ./scripts/jarvis-generate-canned-barks-gemini.mjs --organize"
   },
   "dependencies": {
     "@xterm/xterm": "^5.5.0",

@@ -60,6 +60,7 @@ export interface JarvisStartupGreetingInput {
 }
 
 const JARVIS_SESSION_MEMORY_VERSION = 1;
+const STARTUP_SESSION_AGENT_KEYWORDS = ["copilot", "codex", "claude", "gemini"];
 
 function zeroSnapshot(): JarvisSessionMemorySnapshot {
   return {
@@ -118,6 +119,55 @@ function isJarvisMetaSession(session: AgentSession): boolean {
   const service = (session.service ?? "").toLowerCase();
   const agentId = session.agentId.toLowerCase();
   return service === "jarvis" || agentId.includes("jarvis");
+}
+
+function isStartupAnnounceableSession(session: AgentSession): boolean {
+  if (isJarvisMetaSession(session)) {
+    return false;
+  }
+
+  const searchSpace = [session.agentId, session.service ?? "", session.model ?? "", session.summary ?? ""]
+    .map((value) => value.toLowerCase())
+    .join(" ");
+
+  return STARTUP_SESSION_AGENT_KEYWORDS.some((keyword) => searchSpace.includes(keyword));
+}
+
+function startupSessionAgentName(session: AgentSession): string {
+  const normalized = [session.agentId, session.service ?? "", session.model ?? "", session.summary ?? ""]
+    .map((value) => value.toLowerCase())
+    .join(" ");
+
+  if (normalized.includes("copilot")) {
+    return "Copilot";
+  }
+  if (normalized.includes("codex")) {
+    return "Codex";
+  }
+  if (normalized.includes("claude")) {
+    return "Claude Code";
+  }
+  if (normalized.includes("gemini")) {
+    return "Gemini";
+  }
+
+  return asNonEmptyString(session.agentId) ?? "Agent";
+}
+
+function startupSessionRecencyMs(session: AgentSession): number {
+  const updated = Date.parse(session.updatedAt);
+  if (Number.isFinite(updated)) {
+    return updated;
+  }
+  const heartbeat = Date.parse(session.lastHeartbeat);
+  if (Number.isFinite(heartbeat)) {
+    return heartbeat;
+  }
+  const started = Date.parse(session.startedAt);
+  if (Number.isFinite(started)) {
+    return started;
+  }
+  return 0;
 }
 
 function summaryFromTurns(turns: JarvisConversationTurn[]): string {
@@ -200,11 +250,28 @@ export function buildJarvisStartupGreeting(input: JarvisStartupGreetingInput): s
     `${input.snapshot.actionRunsAttention24h} workflow runs needing attention in the last 24 hours.`;
 
   if (input.priorSessionSummaries.length === 0) {
-    return `${sentenceOne} ${sentenceTwo} This VS Code session starts with a clean Jarvis memory.`;
+    return `${sentenceOne} ${sentenceTwo} No recent Copilot, Codex, Claude Code, or Gemini sessions were detected.`;
   }
 
   const carryOver = input.priorSessionSummaries.map((entry) => clip(entry, 120)).join(" | ");
-  return `${sentenceOne} ${sentenceTwo} Recent session carryover: ${carryOver}.`;
+  return `${sentenceOne} ${sentenceTwo} Most recent non-Jarvis agent sessions: ${carryOver}.`;
+}
+
+export function listRecentStartupAgentSessionSummaries(snapshot: DashboardSnapshot | null, maxCount: number): string[] {
+  const safeMax = Math.max(0, maxCount);
+  if (!snapshot || safeMax === 0) {
+    return [];
+  }
+
+  return snapshot.agents.sessions
+    .filter((session) => isStartupAnnounceableSession(session))
+    .sort((left, right) => startupSessionRecencyMs(right) - startupSessionRecencyMs(left))
+    .slice(0, safeMax)
+    .map((session) => {
+      const status = session.status.replace(/_/g, " ");
+      const details = asNonEmptyString(session.summary) ?? `${status} session`;
+      return `${startupSessionAgentName(session)} (${status}): ${clip(details, 120)}`;
+    });
 }
 
 export function createJarvisSessionMemoryStore(): JarvisSessionMemoryStore {

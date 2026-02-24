@@ -8,6 +8,10 @@ export interface WorkspaceSupervisorConfig {
   apiToken: string;
   repoPath: string;
   startTimeoutMs: number;
+  codexCliPath: string;
+  copilotCliPath: string;
+  claudeCliPath: string;
+  geminiCliPath: string;
   jarvisApiBaseUrl: string;
   jarvisApiKey: string;
   jarvisTextModel: string;
@@ -218,6 +222,10 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
       `ttsProvider=${config.jarvisTtsProvider} geminiKeyConfigured=${Boolean(config.jarvisGeminiApiKey)} ` +
       `geminiModel=${config.jarvisGeminiModel || "(auto)"} geminiVoice=${config.jarvisGeminiVoice || "Charon"}`
     );
+    this.log(
+      `CLI env: codex=${config.codexCliPath || "codex"} copilot=${config.copilotCliPath || "copilot"} ` +
+      `claude=${config.claudeCliPath || "claude"} gemini=${config.geminiCliPath || "gemini"}`
+    );
 
     this.child = spawn(command, args, {
       cwd: repoPath,
@@ -226,6 +234,10 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
         SUPERVISOR_HOST: target.host,
         SUPERVISOR_PORT: String(target.port),
         SUPERVISOR_API_TOKEN: config.apiToken,
+        CODEX_CLI_CMD: config.codexCliPath,
+        COPILOT_CLI_CMD: config.copilotCliPath,
+        CLAUDE_CLI_CMD: config.claudeCliPath,
+        GEMINI_CLI_CMD: config.geminiCliPath,
         SUPERVISOR_JARVIS_API_BASE_URL: config.jarvisApiBaseUrl,
         SUPERVISOR_JARVIS_API_KEY: config.jarvisApiKey,
         SUPERVISOR_JARVIS_TEXT_MODEL: config.jarvisTextModel,

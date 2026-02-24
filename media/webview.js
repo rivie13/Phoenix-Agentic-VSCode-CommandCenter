@@ -1955,3 +1955,83 @@ function render() {
   renderChatTimeline();
 }
 
+function captureActiveEditableState() {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !active.id) {
+    return null;
+  }
+
+  const isEditable =
+    active instanceof HTMLInputElement
+    || active instanceof HTMLTextAreaElement
+    || active.isContentEditable;
+  if (!isEditable) {
+    return null;
+  }
+
+  const selectionCapable = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+  return {
+    id: active.id,
+    selectionStart: selectionCapable ? active.selectionStart : null,
+    selectionEnd: selectionCapable ? active.selectionEnd : null,
+    selectionDirection: selectionCapable ? active.selectionDirection : null,
+    scrollTop: active instanceof HTMLTextAreaElement ? active.scrollTop : null
+  };
+}
+
+function restoreActiveEditableState(captured) {
+  if (!captured || typeof captured.id !== "string" || !captured.id) {
+    return;
+  }
+
+  const target = document.getElementById(captured.id);
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+
+  const isEditable =
+    target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target.isContentEditable;
+  if (!isEditable) {
+    return;
+  }
+
+  if (document.activeElement !== target) {
+    target.focus({ preventScroll: true });
+  }
+
+  if ((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)
+    && typeof captured.selectionStart === "number"
+    && typeof captured.selectionEnd === "number") {
+    try {
+      target.setSelectionRange(
+        captured.selectionStart,
+        captured.selectionEnd,
+        captured.selectionDirection || "none"
+      );
+    } catch {
+      // No-op for unsupported input types.
+    }
+  }
+
+  if (target instanceof HTMLTextAreaElement && typeof captured.scrollTop === "number") {
+    target.scrollTop = captured.scrollTop;
+  }
+}
+
+function renderPreservingActiveEditable() {
+  const captured = captureActiveEditableState();
+  render();
+  if (!captured) {
+    return;
+  }
+
+  if (typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(() => restoreActiveEditableState(captured));
+    return;
+  }
+
+  restoreActiveEditableState(captured);
+}
+

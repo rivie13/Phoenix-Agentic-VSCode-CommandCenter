@@ -39,12 +39,16 @@ interface RuntimeSettings {
   embeddedSupervisorApiToken: string;
   codexCliPath: string;
   copilotCliPath: string;
+  claudeCliPath: string;
+  geminiCliPath: string;
   cliBootstrapOnStartup: boolean;
   cliStartupSpawnPtyTerminals: boolean;
   cliStartupAutoInstallMissing: boolean;
   cliStartupAutoSignIn: boolean;
   codexCliInstallCommand: string;
   copilotCliInstallCommand: string;
+  claudeCliInstallCommand: string;
+  geminiCliInstallCommand: string;
   codexDefaultModel: string;
   copilotDefaultModel: string;
   copilotCloudEnabled: boolean;
@@ -216,12 +220,16 @@ export class DataService {
     const embeddedSupervisorApiToken = config.get<string>("embeddedSupervisorApiToken", "").trim();
     const codexCliPath = stripWrappingQuotes(config.get<string>("codexCliPath", "codex").trim()) || "codex";
     const copilotCliPath = stripWrappingQuotes(config.get<string>("copilotCliPath", "copilot").trim()) || "copilot";
+    const claudeCliPath = stripWrappingQuotes(config.get<string>("claudeCliPath", "claude").trim()) || "claude";
+    const geminiCliPath = stripWrappingQuotes(config.get<string>("geminiCliPath", "gemini").trim()) || "gemini";
     const cliBootstrapOnStartup = config.get<boolean>("cliBootstrapOnStartup", true);
     const cliStartupSpawnPtyTerminals = config.get<boolean>("cliStartupSpawnPtyTerminals", true);
     const cliStartupAutoInstallMissing = config.get<boolean>("cliStartupAutoInstallMissing", true);
     const cliStartupAutoSignIn = config.get<boolean>("cliStartupAutoSignIn", true);
     const codexCliInstallCommand = stripWrappingQuotes(config.get<string>("codexCliInstallCommand", "npm install -g @openai/codex").trim());
     const copilotCliInstallCommand = stripWrappingQuotes(config.get<string>("copilotCliInstallCommand", "npm install -g @github/copilot").trim());
+    const claudeCliInstallCommand = stripWrappingQuotes(config.get<string>("claudeCliInstallCommand", "npm install -g @anthropic-ai/claude-code").trim());
+    const geminiCliInstallCommand = stripWrappingQuotes(config.get<string>("geminiCliInstallCommand", "npm install -g @google/gemini-cli").trim());
     const codexDefaultModel = (explicitStringSetting("codexDefaultModel") ?? "").trim();
     const copilotDefaultModel = (explicitStringSetting("copilotDefaultModel") ?? "").trim();
     const copilotCloudEnabled = config.get<boolean>("copilotCloudEnabled", false);
@@ -291,12 +299,16 @@ export class DataService {
       embeddedSupervisorApiToken,
       codexCliPath,
       copilotCliPath,
+      claudeCliPath,
+      geminiCliPath,
       cliBootstrapOnStartup,
       cliStartupSpawnPtyTerminals,
       cliStartupAutoInstallMissing,
       cliStartupAutoSignIn,
       codexCliInstallCommand,
       copilotCliInstallCommand,
+      claudeCliInstallCommand,
+      geminiCliInstallCommand,
       codexDefaultModel,
       copilotDefaultModel,
       copilotCloudEnabled,

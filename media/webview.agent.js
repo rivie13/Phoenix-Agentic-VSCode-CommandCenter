@@ -47,6 +47,22 @@ function listInteractiveSessions() {
   return (state.snapshot?.agents?.sessions || []).filter((session) => !isJarvisActor(session));
 }
 
+function isTerminalEligibleSession(session) {
+  if (!session || typeof session !== "object") {
+    return false;
+  }
+  const transport = String(session.transport || "").toLowerCase();
+  if (transport !== "local" && transport !== "cli") {
+    return false;
+  }
+  const status = String(session.status || "").toLowerCase();
+  return status === "online" || status === "busy" || status === "waiting";
+}
+
+function listTerminalSessions() {
+  return listInteractiveSessions().filter((session) => isTerminalEligibleSession(session));
+}
+
 function selectedSession() {
   if (!state.snapshot) return null;
   if (state.sessionLockId) {
@@ -99,7 +115,7 @@ function terminalStatusText(sessionId) {
   if (!sessionId) {
     return "No active terminal session.";
   }
-  const session = listInteractiveSessions().find((candidate) => candidate.sessionId === sessionId) || null;
+  const session = listTerminalSessions().find((candidate) => candidate.sessionId === sessionId) || null;
   const stateLabel = state.terminal?.states?.[sessionId] || "unavailable";
   if (!session) {
     return `Session ${sessionId} | ${stateLabel}`;
@@ -184,11 +200,18 @@ function cleanupTerminalInstances(activeSessionIds) {
 
 function chooseTerminalSession() {
   const selected = selectedSession();
-  if (selected?.sessionId) {
+  if (selected?.sessionId && isTerminalEligibleSession(selected)) {
     return selected.sessionId;
   }
-  const first = listInteractiveSessions()[0] || null;
+  const first = listTerminalSessions()[0] || null;
   return first?.sessionId || null;
+}
+
+function isTextEntryElement(node) {
+  if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement) {
+    return true;
+  }
+  return node instanceof HTMLElement && node.isContentEditable;
 }
 
 function renderTerminalPanel() {
@@ -202,7 +225,7 @@ function renderTerminalPanel() {
     return;
   }
 
-  const activeSessionIds = new Set(listInteractiveSessions().map((session) => session.sessionId));
+  const activeSessionIds = new Set(listTerminalSessions().map((session) => session.sessionId));
   cleanupTerminalInstances(activeSessionIds);
 
   if (activeSessionIds.size === 0) {
@@ -218,6 +241,7 @@ function renderTerminalPanel() {
     return;
   }
 
+  const previousAttachedSessionId = state.terminal.attachedSessionId;
   const instance = ensureTerminalInstance(sessionId, mount);
   for (const [candidateSessionId, candidate] of terminalInstances.entries()) {
     if (!candidate?.wrapper) {
@@ -228,7 +252,13 @@ function renderTerminalPanel() {
 
   state.terminal.attachedSessionId = sessionId;
   meta.textContent = terminalStatusText(sessionId);
-  if (instance?.terminal?.focus) {
+  const shouldAutoFocusTerminal =
+    previousAttachedSessionId !== sessionId
+    && section instanceof HTMLDetailsElement
+    && section.open
+    && !isTextEntryElement(document.activeElement);
+
+  if (shouldAutoFocusTerminal && instance?.terminal?.focus) {
     instance.terminal.focus();
   }
 }

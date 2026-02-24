@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { spawnSync } from "node:child_process";
 import * as vscode from "vscode";
 import type {
   ActionRunLogRequestPayload,
@@ -118,8 +119,7 @@ import {
   buildJarvisStartupGreeting,
   createJarvisSessionId,
   createJarvisSessionMemoryStore,
-  listRecentJarvisSessionSummaries,
-  loadJarvisSessionMemory,
+  listRecentStartupAgentSessionSummaries,
   persistJarvisSessionMemory,
   upsertJarvisSessionMemory,
   type JarvisSessionMemoryStore
@@ -127,6 +127,7 @@ import {
 import { buildJarvisTtsInstructions } from "../utils/jarvisPrompts";
 import type { JarvisIdentity, JarvisPersonalityMode } from "../utils/jarvisPrompts";
 import { readJarvisIdentityFromDisk, writeJarvisIdentityToDisk } from "../utils/jarvisIdentity";
+import { parseCliInvocation } from "../utils/cliCommand";
 import { applyStreamEnvelope } from "../utils/transform";
 
 const PROJECT_FIELD_NAMES: ProjectFieldName[] = ["Status", "Work mode", "Priority", "Size", "Area"];
@@ -141,6 +142,9 @@ const JARVIS_SESSION_MEMORY_FILENAME = "phoenix-jarvis-session-memory.json";
 const JARVIS_SESSION_MEMORY_MAX_SESSIONS = 36;
 const JARVIS_SESSION_MEMORY_MAX_TURNS = 64;
 const JARVIS_STARTUP_PRIOR_SUMMARY_COUNT = 3;
+type StartupTerminalService = CliAuthService | "claude" | "gemini";
+const STARTUP_TERMINAL_SERVICES: readonly StartupTerminalService[] = ["codex", "copilot", "claude", "gemini"];
+const AUTH_TRACKED_STARTUP_SERVICES: readonly CliAuthService[] = ["codex", "copilot"];
 
 export class CommandCenterController implements vscode.Disposable {
   private readonly boardViewProvider: CommandCenterViewProvider;
@@ -195,6 +199,7 @@ export class CommandCenterController implements vscode.Disposable {
   private pendingBoardUiAction: PendingBoardUiAction | null = null;
   private startupCliBootstrapInFlight = false;
   private startupCliBootstrapDone = false;
+  private lastPostedAuthPayload = "";
 
   constructor(
     boardViewProvider: CommandCenterViewProvider,
@@ -211,7 +216,7 @@ export class CommandCenterController implements vscode.Disposable {
     this.streamClient = new SupervisorStreamClient();
     this.context = context;
     this.jarvisSessionMemoryFilePath = path.join(this.context.globalStorageUri.fsPath, JARVIS_SESSION_MEMORY_FILENAME);
-    this.jarvisSessionMemory = loadJarvisSessionMemory(this.jarvisSessionMemoryFilePath);
+    this.jarvisSessionMemory = createJarvisSessionMemoryStore();
     this.output = vscode.window.createOutputChannel("Phoenix Ops Command Center");
     this.jarvisHostAudioPlayer = new JarvisHostAudioPlayer({
       info: (message: string) => this.logInfo(message),
@@ -1273,6 +1278,10 @@ export class CommandCenterController implements vscode.Disposable {
         apiToken: settings.supervisorAuthToken,
         repoPath: settings.workspaceSupervisorRepoPath,
         startTimeoutMs: settings.workspaceSupervisorStartTimeoutMs,
+        codexCliPath: settings.codexCliPath,
+        copilotCliPath: settings.copilotCliPath,
+        claudeCliPath: settings.claudeCliPath,
+        geminiCliPath: settings.geminiCliPath,
         jarvisApiBaseUrl: settings.jarvisApiBaseUrl,
         jarvisApiKey: settings.jarvisApiKey,
         jarvisTextModel: settings.jarvisTextModel,
@@ -1479,11 +1488,7 @@ export class CommandCenterController implements vscode.Disposable {
 
     this.persistJarvisSessionMemory(false);
     const workspaceName = this.currentWorkspaceName();
-    const priorSummaries = listRecentJarvisSessionSummaries(
-      this.jarvisSessionMemory,
-      this.jarvisSessionId,
-      JARVIS_STARTUP_PRIOR_SUMMARY_COUNT
-    );
+    const priorSummaries = listRecentStartupAgentSessionSummaries(this.snapshot, JARVIS_STARTUP_PRIOR_SUMMARY_COUNT);
     const greeting = buildJarvisStartupGreeting({
       workspaceName,
       operatorName: this.jarvisIdentity?.name ?? null,
@@ -2240,6 +2245,7 @@ export class CommandCenterController implements vscode.Disposable {
     this.lastUpdatedMs = Date.now();
     this.streamConnected = this.snapshot.meta.streamConnected;
     this.syncTerminalStreams();
+    void this.postAuthState();
     void this.pushSnapshot();
   }
 
@@ -2263,16 +2269,72 @@ export class CommandCenterController implements vscode.Disposable {
   }
 
   private async postAuthState(): Promise<void> {
+    const codex = this.resolveCliAuthStateForWebview("codex");
+    const copilot = this.resolveCliAuthStateForWebview("copilot");
+    const payload = {
+      ok: this.ghAuthOk,
+      codex,
+      copilot
+    };
+    const payloadKey = JSON.stringify(payload);
+    if (payloadKey === this.lastPostedAuthPayload) {
+      return;
+    }
+    this.lastPostedAuthPayload = payloadKey;
+
     this.logInfo(
       `[auth] posting state gh=${this.ghAuthOk ? "ok" : "missing"} ` +
-        `codex=${this.cliAuthState.codex.state}/${this.cliAuthState.codex.summary} ` +
-        `copilot=${this.cliAuthState.copilot.state}/${this.cliAuthState.copilot.summary}`
+        `codex=${codex.state}/${codex.summary} ` +
+        `copilot=${copilot.state}/${copilot.summary}`
     );
-    await this.postMessageToAllWebviews("auth", {
-      ok: this.ghAuthOk,
-      codex: this.cliAuthState.codex,
-      copilot: this.cliAuthState.copilot
-    });
+    await this.postMessageToAllWebviews("auth", payload);
+  }
+
+  private latestTerminalSessionForAuthService(
+    service: CliAuthService
+  ): DashboardSnapshot["agents"]["sessions"][number] | null {
+    if (!this.snapshot) {
+      return null;
+    }
+
+    const candidates = this.snapshot.agents.sessions
+      .filter((session) => {
+        if (!this.isTerminalEligibleSession(session)) {
+          return false;
+        }
+        return String(session.service ?? "").trim().toLowerCase() === service;
+      })
+      .sort((left, right) => this.timestampMs(right.updatedAt) - this.timestampMs(left.updatedAt));
+
+    return candidates[0] ?? null;
+  }
+
+  private resolveCliAuthStateForWebview(service: CliAuthService): CliAuthStatus {
+    const base = this.cliAuthState[service];
+    const terminalSession = this.latestTerminalSessionForAuthService(service);
+    if (!terminalSession) {
+      return base;
+    }
+
+    if (base.state === "signed-in" || base.state === "limited") {
+      return {
+        ...base,
+        authenticated: true,
+        available: true,
+        checkedAt: new Date().toISOString()
+      };
+    }
+
+    return {
+      ...base,
+      state: "signed-in",
+      authenticated: true,
+      available: true,
+      limited: false,
+      summary: "Terminal ready via Supervisor session.",
+      detail: `Using active session ${terminalSession.sessionId}.`,
+      checkedAt: new Date().toISOString()
+    };
   }
 
   private async refreshCliAuthStatus(services: CliAuthService[]): Promise<void> {
@@ -2333,23 +2395,93 @@ export class CommandCenterController implements vscode.Disposable {
     }
   }
 
-  private startupTerminalSessionId(service: CliAuthService): string {
+  private startupTerminalSessionId(service: StartupTerminalService): string {
     return `startup-${service}-terminal`;
   }
 
-  private launchCliInstallTerminal(service: CliAuthService, command: string): void {
+  private startupTerminalAgentId(service: StartupTerminalService): string {
+    return `startup-${service}`;
+  }
+
+  private startupServiceLabel(service: StartupTerminalService): string {
+    if (service === "codex") {
+      return "Codex";
+    }
+    if (service === "copilot") {
+      return "Copilot";
+    }
+    if (service === "claude") {
+      return "Claude Code";
+    }
+    return "Gemini";
+  }
+
+  private startupServiceCliPath(service: StartupTerminalService, settings: ReturnType<DataService["getSettings"]>): string {
+    if (service === "codex") {
+      return settings.codexCliPath;
+    }
+    if (service === "copilot") {
+      return settings.copilotCliPath;
+    }
+    if (service === "claude") {
+      return settings.claudeCliPath;
+    }
+    return settings.geminiCliPath;
+  }
+
+  private startupServiceInstallCommand(
+    service: StartupTerminalService,
+    settings: ReturnType<DataService["getSettings"]>
+  ): string {
+    if (service === "codex") {
+      return settings.codexCliInstallCommand;
+    }
+    if (service === "copilot") {
+      return settings.copilotCliInstallCommand;
+    }
+    if (service === "claude") {
+      return settings.claudeCliInstallCommand;
+    }
+    return settings.geminiCliInstallCommand;
+  }
+
+  private startupServiceSignInCommand(service: CliAuthService): string {
+    return service === "codex" ? "codex login" : "copilot login";
+  }
+
+  private isCliCommandAvailable(configuredCommand: string, fallbackCommand: string): boolean {
+    const invocation = parseCliInvocation(configuredCommand, fallbackCommand);
+    const executable = invocation.command.trim();
+    if (!executable) {
+      return false;
+    }
+
+    if (executable.includes("\\") || executable.includes("/") || executable.includes(":")) {
+      return fs.existsSync(executable);
+    }
+
+    const checker = process.platform === "win32" ? "where" : "which";
+    try {
+      const result = spawnSync(checker, [executable], { stdio: "ignore" });
+      return result.status === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private launchCliInstallTerminal(service: StartupTerminalService, command: string): void {
     const trimmed = command.trim();
     if (!trimmed) {
       return;
     }
     const terminal = vscode.window.createTerminal({
-      name: `Phoenix Ops: Install ${service === "codex" ? "Codex CLI" : "Copilot CLI"}`
+      name: `Phoenix Ops: Install ${this.startupServiceLabel(service)} CLI`
     });
     terminal.show(false);
     terminal.sendText(trimmed, true);
   }
 
-  private async ensureStartupPtyTerminal(service: CliAuthService): Promise<void> {
+  private async ensureStartupPtyTerminal(service: StartupTerminalService): Promise<void> {
     const sessionId = this.startupTerminalSessionId(service);
     const existingSession = this.snapshot?.agents.sessions.find((session) => session.sessionId === sessionId) ?? null;
     if (
@@ -2368,7 +2500,7 @@ export class CommandCenterController implements vscode.Disposable {
 
     const repository = workspaceContext?.repoSlug ?? null;
     const branch = workspaceContext?.branch ?? null;
-    const agentId = service === "codex" ? "startup-codex" : "startup-copilot";
+    const agentId = this.startupTerminalAgentId(service);
 
     await postSupervisorJsonHandler(this.agentRuntimeHandlersDeps(), "/agents/dispatch", {
       sessionId,
@@ -2389,7 +2521,7 @@ export class CommandCenterController implements vscode.Disposable {
     });
   }
 
-  private async sendStartupTerminalCommand(service: CliAuthService, command: string): Promise<void> {
+  private async sendStartupTerminalCommand(service: StartupTerminalService, command: string): Promise<void> {
     const trimmed = command.trim();
     if (!trimmed) {
       return;
@@ -2413,38 +2545,50 @@ export class CommandCenterController implements vscode.Disposable {
 
     this.startupCliBootstrapInFlight = true;
     try {
-      await this.refreshCliAuthStatus(["codex", "copilot"]);
-
-      for (const service of ["codex", "copilot"] as const) {
-        const status = this.cliAuthState[service];
-
-        if (status.state === "unavailable" && settings.cliStartupAutoInstallMissing) {
-          const installCommand = service === "codex"
-            ? settings.codexCliInstallCommand
-            : settings.copilotCliInstallCommand;
-          if (installCommand.trim()) {
-            this.launchCliInstallTerminal(service, installCommand);
-            await this.postStatus(
-              `${service} CLI not found. Started install command in terminal.`,
-              "warn"
-            );
+      if (settings.cliStartupAutoInstallMissing) {
+        for (const service of STARTUP_TERMINAL_SERVICES) {
+          const cliPath = this.startupServiceCliPath(service, settings);
+          if (this.isCliCommandAvailable(cliPath, service)) {
+            continue;
           }
-          continue;
-        }
 
-        if (settings.cliStartupSpawnPtyTerminals && status.state !== "unavailable") {
+          const installCommand = this.startupServiceInstallCommand(service, settings);
+          if (!installCommand.trim()) {
+            this.logWarn(`startup auto-install skipped for ${service}: no install command configured.`);
+            continue;
+          }
+
+          this.launchCliInstallTerminal(service, installCommand);
+          await this.postStatus(`${this.startupServiceLabel(service)} CLI not found. Started install command in terminal.`, "warn");
+        }
+      }
+
+      await this.refreshCliAuthStatus([...AUTH_TRACKED_STARTUP_SERVICES]);
+
+      if (settings.cliStartupSpawnPtyTerminals) {
+        for (const service of STARTUP_TERMINAL_SERVICES) {
           await this.ensureStartupPtyTerminal(service);
         }
+      }
+
+      for (const service of AUTH_TRACKED_STARTUP_SERVICES) {
+        const status = this.resolveCliAuthStateForWebview(service);
 
         if (settings.cliStartupAutoSignIn && (status.state === "signed-out" || status.state === "unknown")) {
-          const signInCommand = service === "codex" ? "codex login" : "copilot login";
+          const startupSessionId = this.startupTerminalSessionId(service);
+          if (!this.canSendTerminalInput(startupSessionId)) {
+            this.logWarn(`startup sign-in skipped for ${service}: startup terminal session is not ready.`);
+            continue;
+          }
+
+          const signInCommand = this.startupServiceSignInCommand(service);
           await this.sendStartupTerminalCommand(service, signInCommand);
           await this.postStatus(`Startup sign-in command sent for ${service}.`, "warn");
         }
       }
 
       await this.refreshNow("manual");
-      await this.refreshCliAuthStatus(["codex", "copilot"]);
+      await this.refreshCliAuthStatus([...AUTH_TRACKED_STARTUP_SERVICES]);
       this.startupCliBootstrapDone = true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2589,6 +2733,32 @@ export class CommandCenterController implements vscode.Disposable {
     this.terminalClients.clear();
   }
 
+  private isTerminalEligibleSession(session: DashboardSnapshot["agents"]["sessions"][number]): boolean {
+    const service = String(session.service ?? "").toLowerCase();
+    if (service === "jarvis") {
+      return false;
+    }
+
+    if (session.transport !== "local" && session.transport !== "cli") {
+      return false;
+    }
+
+    return session.status === "online" || session.status === "busy" || session.status === "waiting";
+  }
+
+  private canSendTerminalInput(sessionId: string): boolean {
+    if (!this.snapshot) {
+      return false;
+    }
+
+    const session = this.snapshot.agents.sessions.find((candidate) => candidate.sessionId === sessionId) ?? null;
+    if (!session || !this.isTerminalEligibleSession(session)) {
+      return false;
+    }
+
+    return this.terminalClients.has(sessionId);
+  }
+
   private syncTerminalStreams(): void {
     if (!this.snapshot) {
       this.closeAllTerminalStreams();
@@ -2597,16 +2767,7 @@ export class CommandCenterController implements vscode.Disposable {
 
     const activeSessionIds = new Set(
       this.snapshot.agents.sessions
-        .filter((session) => {
-          const service = String(session.service ?? "").toLowerCase();
-          if (service === "jarvis") {
-            return false;
-          }
-          if (session.transport !== "local" && session.transport !== "cli") {
-            return false;
-          }
-          return session.status === "online" || session.status === "busy" || session.status === "waiting";
-        })
+        .filter((session) => this.isTerminalEligibleSession(session))
         .map((session) => session.sessionId)
     );
 
@@ -2674,6 +2835,10 @@ export class CommandCenterController implements vscode.Disposable {
   private async sendAgentTerminalInput(payload: AgentTerminalInputPayload): Promise<void> {
     const sessionId = typeof payload.sessionId === "string" ? payload.sessionId.trim() : "";
     if (!sessionId) {
+      return;
+    }
+
+    if (!this.canSendTerminalInput(sessionId)) {
       return;
     }
 

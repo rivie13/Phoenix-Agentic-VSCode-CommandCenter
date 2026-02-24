@@ -804,7 +804,7 @@ window.addEventListener("message", (event) => {
     syncSelectedSessionFromSnapshot();
     consumeIssueAiAssistResponseFromSnapshot();
     updateFilterOptions(state.snapshot);
-    render();
+    renderPreservingActiveEditable();
   }
   if (message.type === "status") {
     setStatus(message.payload.text, message.payload.level);
