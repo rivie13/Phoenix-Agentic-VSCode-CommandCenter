@@ -143,6 +143,8 @@ const JARVIS_SESSION_MEMORY_MAX_SESSIONS = 36;
 const JARVIS_SESSION_MEMORY_MAX_TURNS = 64;
 const JARVIS_STARTUP_PRIOR_SUMMARY_COUNT = 3;
 type StartupTerminalService = CliAuthService | "claude" | "gemini";
+type WebviewCliAuthService = CliAuthService | "gemini";
+type WebviewCliAuthStatus = Omit<CliAuthStatus, "service"> & { service: WebviewCliAuthService };
 const STARTUP_TERMINAL_SERVICES: readonly StartupTerminalService[] = ["codex", "copilot", "claude", "gemini"];
 const AUTH_TRACKED_STARTUP_SERVICES: readonly CliAuthService[] = ["codex", "copilot"];
 const STARTUP_INIT_BLOCKING_BUDGET_MS = 1500;
@@ -402,6 +404,25 @@ export class CommandCenterController implements vscode.Disposable {
       this.logWarn("[auth:copilot] sign-in command did not launch.");
     }
     await this.watchCliAuthAfterSignIn("copilot");
+  }
+
+  async signInGeminiCliCommand(): Promise<void> {
+    this.logInfo("[auth:gemini] sign-in requested.");
+    const settings = this.getRuntimeSettings();
+    const fallbackCommands = ["gemini auth login", "gemini login"];
+    const configured = settings.geminiCliAuthCommand.trim();
+    const execution = await runAuthCommandFromSetting(
+      "geminiCliAuthCommand",
+      configured && configured.toLowerCase() !== "auto" ? [configured, ...fallbackCommands] : fallbackCommands,
+      "Gemini CLI"
+    );
+    if (execution) {
+      this.logInfo(
+        `[auth:gemini] launched terminal='${execution.terminalName}' command='${execution.command}'`
+      );
+    } else {
+      this.logWarn("[auth:gemini] sign-in command did not launch.");
+    }
   }
 
   async geminiSignInCommand(): Promise<void> {
@@ -2328,10 +2349,12 @@ export class CommandCenterController implements vscode.Disposable {
   private async postAuthState(): Promise<void> {
     const codex = this.resolveCliAuthStateForWebview("codex");
     const copilot = this.resolveCliAuthStateForWebview("copilot");
+    const gemini = this.resolveTerminalObservedCliStateForWebview("gemini", "Gemini");
     const payload = {
       ok: this.ghAuthOk,
       codex,
-      copilot
+      copilot,
+      gemini
     };
     const payloadKey = JSON.stringify(payload);
     if (payloadKey === this.lastPostedAuthPayload) {
@@ -2342,13 +2365,14 @@ export class CommandCenterController implements vscode.Disposable {
     this.logInfo(
       `[auth] posting state gh=${this.ghAuthOk ? "ok" : "missing"} ` +
         `codex=${codex.state}/${codex.summary} ` +
-        `copilot=${copilot.state}/${copilot.summary}`
+        `copilot=${copilot.state}/${copilot.summary} ` +
+        `gemini=${gemini.state}/${gemini.summary}`
     );
     await this.postMessageToAllWebviews("auth", payload);
   }
 
-  private latestTerminalSessionForAuthService(
-    service: CliAuthService
+  private latestTerminalSessionForService(
+    service: string
   ): DashboardSnapshot["agents"]["sessions"][number] | null {
     if (!this.snapshot) {
       return null;
@@ -2366,9 +2390,9 @@ export class CommandCenterController implements vscode.Disposable {
     return candidates[0] ?? null;
   }
 
-  private resolveCliAuthStateForWebview(service: CliAuthService): CliAuthStatus {
+  private resolveCliAuthStateForWebview(service: CliAuthService): WebviewCliAuthStatus {
     const base = this.cliAuthState[service];
-    const terminalSession = this.latestTerminalSessionForAuthService(service);
+    const terminalSession = this.latestTerminalSessionForService(service);
     if (!terminalSession) {
       return base;
     }
@@ -2390,6 +2414,36 @@ export class CommandCenterController implements vscode.Disposable {
       limited: false,
       summary: "Terminal ready via Supervisor session.",
       detail: `Using active session ${terminalSession.sessionId}.`,
+      checkedAt: new Date().toISOString()
+    };
+  }
+
+  private resolveTerminalObservedCliStateForWebview(
+    service: "gemini",
+    label: string
+  ): WebviewCliAuthStatus {
+    const terminalSession = this.latestTerminalSessionForService(service);
+    if (terminalSession) {
+      return {
+        service,
+        state: "signed-in",
+        authenticated: true,
+        available: true,
+        limited: false,
+        summary: "Terminal ready via Supervisor session.",
+        detail: `Using active session ${terminalSession.sessionId}.`,
+        checkedAt: new Date().toISOString()
+      };
+    }
+
+    return {
+      service,
+      state: "signed-out",
+      authenticated: false,
+      available: true,
+      limited: false,
+      summary: `${label} terminal not active.`,
+      detail: "Start or attach a Gemini terminal session to observe availability.",
       checkedAt: new Date().toISOString()
     };
   }

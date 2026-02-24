@@ -319,8 +319,10 @@ export async function postRuntimeContext(
     dispatchConfig: {
       codexCliPath: settings.codexCliPath,
       copilotCliPath: settings.copilotCliPath,
+      geminiCliPath: settings.geminiCliPath,
       codexDefaultModel: settings.codexDefaultModel || null,
       copilotDefaultModel: settings.copilotDefaultModel || null,
+      geminiDefaultModel: settings.geminiDefaultModel || null,
       copilotCloudEnabled: settings.copilotCloudEnabled
     }
   };

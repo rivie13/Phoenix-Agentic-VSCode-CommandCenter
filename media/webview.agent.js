@@ -1135,7 +1135,8 @@ function renderControlMeta() {
   const stats = computeSessionStats(session);
   const codexMeta = formatCliAuthMeta("Codex", state.auth?.codex);
   const copilotMeta = formatCliAuthMeta("Copilot", state.auth?.copilot);
-  const authMeta = `${codexMeta} | ${copilotMeta}`;
+  const geminiMeta = formatCliAuthMeta("Gemini", state.auth?.gemini);
+  const authMeta = `${codexMeta} | ${copilotMeta} | ${geminiMeta}`;
   if (meta) {
     meta.textContent = session
       ? `Selected: ${session.agentId} (${session.sessionId}) | ${session.transport} | ${session.status} | Continues ${stats?.continues ?? 0} | Chats ${stats?.chatMessages ?? 0} | ${authMeta}`

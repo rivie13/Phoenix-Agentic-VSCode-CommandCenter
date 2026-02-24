@@ -22,6 +22,7 @@
     "onCommand:phoenixOps.signIn",
     "onCommand:phoenixOps.signInCodexCli",
     "onCommand:phoenixOps.signInCopilotCli",
+    "onCommand:phoenixOps.signInGeminiCli",
     "onCommand:phoenixOps.geminiSignIn",
     "onCommand:phoenixOps.geminiSetApiKey",
     "onCommand:phoenixOps.pollinationsSignIn",
@@ -95,6 +96,10 @@
       {
         "command": "phoenixOps.signInCopilotCli",
         "title": "Phoenix Ops: Sign In to Copilot CLI"
+      },
+      {
+        "command": "phoenixOps.signInGeminiCli",
+        "title": "Phoenix Ops: Sign In to Gemini CLI"
       },
       {
         "command": "phoenixOps.geminiSignIn",
@@ -334,6 +339,11 @@
           "default": "auto",
           "description": "Terminal command used by 'Phoenix Ops: Sign In to Copilot CLI'. Set to 'auto' to prefer `copilot login` with fallback."
         },
+        "phoenixOps.geminiCliAuthCommand": {
+          "type": "string",
+          "default": "auto",
+          "description": "Terminal command used by 'Phoenix Ops: Sign In to Gemini CLI'. Set to 'auto' to prefer `gemini auth login` with fallback."
+        },
         "phoenixOps.codexCliPath": {
           "type": "string",
           "default": "codex",
@@ -403,6 +413,11 @@
           "type": "string",
           "default": "",
           "description": "Optional default Copilot model used when dispatcher payload omits model."
+        },
+        "phoenixOps.geminiDefaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional default Gemini model used when dispatcher payload omits model."
         },
         "phoenixOps.copilotCloudEnabled": {
           "type": "boolean",

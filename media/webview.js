@@ -281,6 +281,21 @@ function createUnknownCliAuthClientState(service) {
   };
 }
 
+function inferCliAuthService(label, status) {
+  const fromStatus = typeof status?.service === "string" ? status.service.trim().toLowerCase() : "";
+  if (fromStatus === "copilot" || fromStatus === "gemini" || fromStatus === "codex") {
+    return fromStatus;
+  }
+  const loweredLabel = String(label || "").trim().toLowerCase();
+  if (loweredLabel.includes("copilot")) {
+    return "copilot";
+  }
+  if (loweredLabel.includes("gemini")) {
+    return "gemini";
+  }
+  return "codex";
+}
+
 function normalizeCliAuthClientState(raw, service) {
   const fallback = createUnknownCliAuthClientState(service);
   if (!raw || typeof raw !== "object") {
@@ -305,7 +320,7 @@ function normalizeCliAuthClientState(raw, service) {
 }
 
 function formatCliAuthButtonText(label, status) {
-  const normalized = normalizeCliAuthClientState(status, String(label || "").toLowerCase().includes("copilot") ? "copilot" : "codex");
+  const normalized = normalizeCliAuthClientState(status, inferCliAuthService(label, status));
   const stateLabel = normalized.state === "signed-in"
     ? "Signed In"
     : normalized.state === "signed-out"
@@ -321,7 +336,7 @@ function formatCliAuthButtonText(label, status) {
 }
 
 function formatCliAuthMeta(label, status) {
-  const normalized = normalizeCliAuthClientState(status, String(label || "").toLowerCase().includes("copilot") ? "copilot" : "codex");
+  const normalized = normalizeCliAuthClientState(status, inferCliAuthService(label, status));
   if (normalized.state === "limited") {
     return `${label}: limited`;
   }
@@ -348,7 +363,8 @@ const state = {
   auth: {
     ok: false,
     codex: createUnknownCliAuthClientState("codex"),
-    copilot: createUnknownCliAuthClientState("copilot")
+    copilot: createUnknownCliAuthClientState("copilot"),
+    gemini: createUnknownCliAuthClientState("gemini")
   },
   filters: {
     repo: "all",
@@ -413,8 +429,10 @@ const state = {
     dispatchConfig: {
       codexCliPath: "codex",
       copilotCliPath: "copilot",
+      geminiCliPath: "gemini",
       codexDefaultModel: null,
       copilotDefaultModel: null,
+      geminiDefaultModel: null,
       copilotCloudEnabled: false
     }
   },
@@ -1001,6 +1019,7 @@ function renderAuth() {
   const signIn = byId("signInButton");
   const codexSignIn = byId("signInCodexButton");
   const copilotSignIn = byId("signInCopilotButton");
+  const geminiCliSignIn = byId("signInGeminiCliButton");
 
   if (signIn) {
     signIn.textContent = state.auth.ok ? "Signed In" : "Sign In";
@@ -1017,6 +1036,12 @@ function renderAuth() {
     copilotSignIn.textContent = formatCliAuthButtonText("Copilot", state.auth.copilot);
     const detail = state.auth.copilot?.detail ? ` ${state.auth.copilot.detail}` : "";
     copilotSignIn.title = `${state.auth.copilot?.summary || "Status unavailable."}${detail}`.trim();
+  }
+
+  if (geminiCliSignIn) {
+    geminiCliSignIn.textContent = formatCliAuthButtonText("Gemini", state.auth.gemini);
+    const detail = state.auth.gemini?.detail ? ` ${state.auth.gemini.detail}` : "";
+    geminiCliSignIn.title = `${state.auth.gemini?.summary || "Status unavailable."}${detail}`.trim();
   }
 }
 

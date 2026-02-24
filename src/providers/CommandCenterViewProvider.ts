@@ -134,6 +134,7 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
           <button id="signInButton">Sign In</button>
           <button id="signInCodexButton">Codex CLI</button>
           <button id="signInCopilotButton">Copilot CLI</button>
+          <button id="signInGeminiCliButton">Gemini CLI</button>
           <button id="geminiSignInButton">Gemini Key Portal</button>
           <button id="geminiApiKeyButton">Set Gemini Key</button>
           <button id="pollinationsSignInButton">Pollinations Sign In</button>

@@ -193,10 +193,13 @@ export async function dispatchAgent(
       ? Number(payload.issueNumber)
       : null;
     const issueNodeId = payload.issueNodeId?.trim() || null;
-    const model =
-      payload.model?.trim() ||
-      (service === "copilot" ? settings.copilotDefaultModel : settings.codexDefaultModel) ||
-      null;
+    const configuredDefaultModel =
+      service === "copilot"
+        ? settings.copilotDefaultModel
+        : service === "gemini"
+          ? settings.geminiDefaultModel
+          : settings.codexDefaultModel;
+    const model = payload.model?.trim() || configuredDefaultModel || null;
 
     if (!localLikeTransport && !cloudTransport) {
       vscode.window.showWarningMessage("Transport must be local, cli, or cloud.");

@@ -2,6 +2,7 @@ function bindEvents() {
   const signInButton = byId("signInButton");
   const signInCodexButton = byId("signInCodexButton");
   const signInCopilotButton = byId("signInCopilotButton");
+  const signInGeminiCliButton = byId("signInGeminiCliButton");
   const geminiSignInButton = byId("geminiSignInButton");
   const geminiApiKeyButton = byId("geminiApiKeyButton");
   const pollinationsSignInButton = byId("pollinationsSignInButton");
@@ -117,6 +118,7 @@ function bindEvents() {
   if (signInButton) signInButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.signIn" }));
   if (signInCodexButton) signInCodexButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.signInCodexCli" }));
   if (signInCopilotButton) signInCopilotButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.signInCopilotCli" }));
+  if (signInGeminiCliButton) signInGeminiCliButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.signInGeminiCli" }));
   if (geminiSignInButton) geminiSignInButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.geminiSignIn" }));
   if (geminiApiKeyButton) geminiApiKeyButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.geminiSetApiKey" }));
   if (pollinationsSignInButton) pollinationsSignInButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.pollinationsSignIn" }));
@@ -817,6 +819,7 @@ window.addEventListener("message", (event) => {
     state.auth.ok = Boolean(payload.ok);
     state.auth.codex = normalizeCliAuthClientState(payload.codex, "codex");
     state.auth.copilot = normalizeCliAuthClientState(payload.copilot, "copilot");
+    state.auth.gemini = normalizeCliAuthClientState(payload.gemini, "gemini");
     renderAuth();
     if (typeof renderControlMeta === "function") {
       renderControlMeta();
@@ -871,11 +874,17 @@ window.addEventListener("message", (event) => {
       copilotCliPath: typeof dispatchConfig.copilotCliPath === "string" && dispatchConfig.copilotCliPath.trim()
         ? dispatchConfig.copilotCliPath.trim()
         : "copilot",
+      geminiCliPath: typeof dispatchConfig.geminiCliPath === "string" && dispatchConfig.geminiCliPath.trim()
+        ? dispatchConfig.geminiCliPath.trim()
+        : "gemini",
       codexDefaultModel: typeof dispatchConfig.codexDefaultModel === "string" && dispatchConfig.codexDefaultModel.trim()
         ? dispatchConfig.codexDefaultModel.trim()
         : null,
       copilotDefaultModel: typeof dispatchConfig.copilotDefaultModel === "string" && dispatchConfig.copilotDefaultModel.trim()
         ? dispatchConfig.copilotDefaultModel.trim()
+        : null,
+      geminiDefaultModel: typeof dispatchConfig.geminiDefaultModel === "string" && dispatchConfig.geminiDefaultModel.trim()
+        ? dispatchConfig.geminiDefaultModel.trim()
         : null,
       copilotCloudEnabled: Boolean(dispatchConfig.copilotCloudEnabled)
     };
