@@ -37,6 +37,11 @@ interface RuntimeSettings {
   embeddedSupervisorHost: string;
   embeddedSupervisorPort: number;
   embeddedSupervisorApiToken: string;
+  codexCliPath: string;
+  copilotCliPath: string;
+  codexDefaultModel: string;
+  copilotDefaultModel: string;
+  copilotCloudEnabled: boolean;
   codexModelOptions: string[];
   copilotModelOptions: string[];
   agentModelCatalogUrl: string;
@@ -48,6 +53,11 @@ interface RuntimeSettings {
   jarvisTextModel: string;
   jarvisSpeechModel: string;
   jarvisVoice: string;
+  jarvisTtsProvider: "gemini-with-fallback" | "gemini" | "pollinations";
+  jarvisGeminiApiKey: string;
+  jarvisGeminiModel: string;
+  jarvisGeminiVoice: string;
+  jarvisTtsDebug: boolean;
   jarvisMaxAnnouncementsPerHour: number;
   jarvisMinSecondsBetweenAnnouncements: number;
   jarvisReasonCooldownMinutes: number;
@@ -184,6 +194,11 @@ export class DataService {
     const embeddedSupervisorHost = config.get<string>("embeddedSupervisorHost", "127.0.0.1").trim() || "127.0.0.1";
     const embeddedSupervisorPort = Math.max(1, Math.min(65535, config.get<number>("embeddedSupervisorPort", 8789)));
     const embeddedSupervisorApiToken = config.get<string>("embeddedSupervisorApiToken", "").trim();
+    const codexCliPath = config.get<string>("codexCliPath", "codex").trim() || "codex";
+    const copilotCliPath = config.get<string>("copilotCliPath", "copilot").trim() || "copilot";
+    const codexDefaultModel = (explicitStringSetting("codexDefaultModel") ?? "").trim();
+    const copilotDefaultModel = (explicitStringSetting("copilotDefaultModel") ?? "").trim();
+    const copilotCloudEnabled = config.get<boolean>("copilotCloudEnabled", false);
     const codexModelOptions = normalizeStringArraySetting(
       config.get<string[]>("codexModelOptions", []),
       ["gpt-5.3-codex", "gpt-5-codex"]
@@ -207,6 +222,14 @@ export class DataService {
       ? jarvisDefaultSpeechModel
       : configuredJarvisSpeechModel;
     const jarvisVoice = config.get<string>("jarvisVoice", "onyx").trim() || "onyx";
+    const configuredJarvisTtsProvider = (explicitStringSetting("jarvisTtsProvider") ?? "").trim().toLowerCase();
+    const jarvisTtsProvider = configuredJarvisTtsProvider === "gemini" || configuredJarvisTtsProvider === "pollinations"
+      ? configuredJarvisTtsProvider
+      : "gemini-with-fallback";
+    const jarvisGeminiApiKey = (explicitStringSetting("jarvisGeminiApiKey") ?? "").trim();
+    const jarvisGeminiModel = (explicitStringSetting("jarvisGeminiModel") ?? "").trim() || "gemini-2.5-flash-preview-tts";
+    const jarvisGeminiVoice = (explicitStringSetting("jarvisGeminiVoice") ?? "").trim() || "Charon";
+    const jarvisTtsDebug = config.get<boolean>("jarvisTtsDebug", false);
     const jarvisMaxAnnouncementsPerHour = Math.min(20, Math.max(1, config.get<number>("jarvisMaxAnnouncementsPerHour", 12)));
     const jarvisMinSecondsBetweenAnnouncements = Math.max(30, config.get<number>("jarvisMinSecondsBetweenAnnouncements", 180));
     const jarvisReasonCooldownMinutes = Math.max(5, config.get<number>("jarvisReasonCooldownMinutes", 20));
@@ -237,6 +260,11 @@ export class DataService {
       embeddedSupervisorHost,
       embeddedSupervisorPort,
       embeddedSupervisorApiToken,
+      codexCliPath,
+      copilotCliPath,
+      codexDefaultModel,
+      copilotDefaultModel,
+      copilotCloudEnabled,
       codexModelOptions,
       copilotModelOptions,
       agentModelCatalogUrl,
@@ -248,6 +276,11 @@ export class DataService {
       jarvisTextModel,
       jarvisSpeechModel,
       jarvisVoice,
+      jarvisTtsProvider,
+      jarvisGeminiApiKey,
+      jarvisGeminiModel,
+      jarvisGeminiVoice,
+      jarvisTtsDebug,
       jarvisMaxAnnouncementsPerHour,
       jarvisMinSecondsBetweenAnnouncements,
       jarvisReasonCooldownMinutes,

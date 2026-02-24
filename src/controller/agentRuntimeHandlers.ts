@@ -174,32 +174,59 @@ export async function dispatchAgent(
 
   try {
     const workspaceContext = await resolveCurrentWorkspaceContext();
+    const settings = deps.getRuntimeSettings();
     const transport = (payload.transport ?? "unknown").trim().toLowerCase();
     const service = (payload.service ?? "").trim().toLowerCase() || (transport === "cloud" ? "copilot" : "codex");
     const localLikeTransport = transport === "local" || transport === "cli";
+    const cloudTransport = transport === "cloud";
     const repository = localLikeTransport
       ? (payload.repository ?? workspaceContext?.repoSlug ?? null)
-      : (payload.repository ?? null);
+      : (payload.repository ?? workspaceContext?.repoSlug ?? null);
     const branch = localLikeTransport
       ? (payload.branch ?? workspaceContext?.branch ?? null)
-      : (payload.branch ?? null);
+      : (payload.branch ?? workspaceContext?.branch ?? null);
     const workspace = localLikeTransport
       ? (payload.workspace ?? workspaceContext?.workspace ?? defaultWorkspacePath())
-      : (payload.workspace ?? null);
+      : null;
     const issueNumber = Number.isInteger(payload.issueNumber) && Number(payload.issueNumber) > 0
       ? Number(payload.issueNumber)
       : null;
     const issueNodeId = payload.issueNodeId?.trim() || null;
+    const model =
+      payload.model?.trim() ||
+      (service === "copilot" ? settings.copilotDefaultModel : settings.codexDefaultModel) ||
+      null;
+
+    if (!localLikeTransport && !cloudTransport) {
+      vscode.window.showWarningMessage("Transport must be local, cli, or cloud.");
+      return;
+    }
 
     if (service === "codex" && !localLikeTransport) {
       vscode.window.showWarningMessage("Codex dispatch requires transport=local or transport=cli.");
       return;
     }
-    if (service === "codex" && !workspace) {
-      vscode.window.showWarningMessage("Workspace path is required for Codex dispatch.");
+    if (service === "copilot" && !localLikeTransport && !cloudTransport) {
+      vscode.window.showWarningMessage("Copilot dispatch requires transport=local, transport=cli, or transport=cloud.");
       return;
     }
-    if (transport === "cloud" && service === "copilot" && !issueNumber) {
+    if (localLikeTransport && !workspace) {
+      vscode.window.showWarningMessage("Workspace path is required for local/cli dispatch.");
+      return;
+    }
+    if (cloudTransport && service !== "copilot") {
+      vscode.window.showWarningMessage("Cloud dispatch currently supports service=copilot only.");
+      return;
+    }
+    if (cloudTransport && service === "copilot" && !settings.copilotCloudEnabled) {
+      vscode.window.showWarningMessage("Copilot cloud dispatch is disabled in settings (phoenixOps.copilotCloudEnabled=false).");
+      return;
+    }
+    if (cloudTransport && service === "copilot" && !repository) {
+      vscode.window.showWarningMessage("Repository is required for Copilot cloud dispatch.");
+      return;
+    }
+    if (cloudTransport && service === "copilot" && !issueNumber) {
       vscode.window.showWarningMessage("Issue number is required for Copilot cloud dispatch.");
       return;
     }
@@ -211,7 +238,7 @@ export async function dispatchAgent(
       summary: payload.summary ?? null,
       service,
       mode: payload.mode?.trim() || null,
-      model: payload.model?.trim() || null,
+      model,
       toolProfile: payload.toolProfile?.trim() || null,
       mcpTools: normalizeToolIds(payload.mcpTools),
       repository,

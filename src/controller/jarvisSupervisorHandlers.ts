@@ -77,7 +77,6 @@ export async function requestJarvisRespondFromSupervisor(
     service: "jarvis",
     mode: "voice",
     model: settings.jarvisTextModel,
-    voice: settings.jarvisVoice,
     workspace: defaultWorkspacePath(),
     occurredAt: new Date().toISOString()
   };

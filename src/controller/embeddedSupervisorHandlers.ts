@@ -14,6 +14,11 @@ interface EmbeddedSupervisorSettings {
   jarvisTextModel: string;
   jarvisSpeechModel: string;
   jarvisVoice: string;
+  jarvisTtsProvider: "gemini-with-fallback" | "gemini" | "pollinations";
+  jarvisGeminiApiKey: string;
+  jarvisGeminiModel: string;
+  jarvisGeminiVoice: string;
+  jarvisTtsDebug: boolean;
   jarvisPollinationsHardCooldownSeconds: number;
   jarvisPollinationsSoftCooldownSeconds: number;
 }
@@ -48,6 +53,11 @@ export async function ensureEmbeddedSupervisorStarted(deps: EmbeddedSupervisorHa
       jarvisTextModel: settings.jarvisTextModel,
       jarvisSpeechModel: settings.jarvisSpeechModel,
       jarvisVoice: settings.jarvisVoice,
+      jarvisTtsProvider: settings.jarvisTtsProvider,
+      jarvisGeminiApiKey: settings.jarvisGeminiApiKey,
+      jarvisGeminiModel: settings.jarvisGeminiModel,
+      jarvisGeminiVoice: settings.jarvisGeminiVoice,
+      jarvisTtsDebug: settings.jarvisTtsDebug,
       jarvisHardCooldownSeconds: settings.jarvisPollinationsHardCooldownSeconds,
       jarvisSoftCooldownSeconds: settings.jarvisPollinationsSoftCooldownSeconds
     });

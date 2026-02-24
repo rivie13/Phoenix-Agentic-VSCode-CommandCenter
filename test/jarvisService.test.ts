@@ -101,6 +101,104 @@ describe("JarvisService pollinations resilience", () => {
     expect(calls[0]?.url).toBe("https://gen.pollinations.ai/v1/chat/completions");
   });
 
+  it("uses Gemini TTS first when configured", async () => {
+    const calls: Array<{ url: unknown; body: Record<string, unknown> | null }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (input: unknown, init?: RequestInit) => {
+      let body: Record<string, unknown> | null = null;
+      if (typeof init?.body === "string") {
+        body = JSON.parse(init.body) as Record<string, unknown>;
+      }
+      calls.push({ url: input, body });
+      return new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    inlineData: {
+                      data: "QUJD",
+                      mimeType: "audio/wav"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new JarvisService();
+
+    const speech = await service.synthesizeSpeech("hello", {
+      ...settings,
+      ttsProvider: "gemini",
+      geminiApiKey: "gemini-key",
+      geminiModel: "gemini-2.5-flash-preview-tts",
+      geminiVoice: "Charon"
+    });
+
+    expect(speech.audioBase64).toBe("QUJD");
+    expect(speech.mimeType).toBe("audio/wav");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(calls[0]?.url).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
+    );
+  });
+
+  it("falls back to Pollinations TTS when Gemini fails in gemini-with-fallback mode", async () => {
+    const calls: Array<{ url: unknown; body: Record<string, unknown> | null }> = [];
+    const fetchMock = vi.fn().mockImplementation(async (input: unknown, init?: RequestInit) => {
+      let body: Record<string, unknown> | null = null;
+      if (typeof init?.body === "string") {
+        body = JSON.parse(init.body) as Record<string, unknown>;
+      }
+      calls.push({ url: input, body });
+
+      if (calls.length === 1) {
+        return new Response("quota exceeded", { status: 429 });
+      }
+      return new Response(Buffer.from("audio-bytes"), {
+        status: 200,
+        headers: { "content-type": "audio/mpeg" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new JarvisService();
+
+    const speech = await service.synthesizeSpeech("hello", {
+      ...settings,
+      ttsProvider: "gemini-with-fallback",
+      geminiApiKey: "gemini-key",
+      geminiModel: "gemini-2.5-flash-preview-tts",
+      geminiVoice: "Charon"
+    });
+
+    expect(speech.audioBase64).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(calls[0]?.url).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
+    );
+    expect(calls[1]?.url).toBe("https://gen.pollinations.ai/v1/audio/speech");
+  });
+
+  it("throws when Gemini-only mode is selected without API key", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new JarvisService();
+
+    await expect(
+      service.synthesizeSpeech("hello", {
+        ...settings,
+        ttsProvider: "gemini",
+        geminiApiKey: ""
+      })
+    ).rejects.toThrow(/gemini api key/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("retries speech with tts-1 when configured model is invalid", async () => {
     const calls: Array<{ url: unknown; body: Record<string, unknown> | null }> = [];
     const fetchMock = vi.fn().mockImplementation(async (input: unknown, init?: RequestInit) => {

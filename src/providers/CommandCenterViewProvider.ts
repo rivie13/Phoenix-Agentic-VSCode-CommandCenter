@@ -580,6 +580,7 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
               <select id="composerTransportSelect" class="composer-select" title="Runtime">
                 <option value="local">Local</option>
                 <option value="cli">CLI</option>
+                <option value="cloud">Cloud</option>
               </select>
               <select id="composerModeSelect" class="composer-select" title="Mode">
                 <option value="agent">Agent</option>
@@ -597,6 +598,11 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
                 <option value="terminal">Tools: Terminal</option>
               </select>
               <select id="composerMcpToolsSelect" class="composer-select composer-mcp-select" title="MCP Tools" multiple size="4"></select>
+            </div>
+            <div id="composerCloudControls" class="composer-cloud-controls">
+              <input id="composerIssueNumberInput" class="composer-select" type="number" min="1" step="1" placeholder="Issue #" />
+              <input id="composerIssueNodeIdInput" class="composer-select" type="text" placeholder="Issue Node ID (optional)" />
+              <div id="composerCloudStatus" class="meta-line secondary"></div>
             </div>
             <div class="composer-actions">
               <button id="stopSessionFromComposerButton" class="composer-stop-button" title="Stop session">Stop</button>

@@ -22,6 +22,11 @@ type JarvisServiceSettings = {
   textModel: string;
   speechModel: string;
   voice: string;
+  ttsProvider?: string;
+  geminiApiKey?: string;
+  geminiModel?: string;
+  geminiVoice?: string;
+  ttsDebug?: boolean;
 };
 
 type JarvisDelegatedApprovalResult = { text: string; reason: string; focusHint: JarvisFocusHint | null };

@@ -671,6 +671,10 @@ function renderChatComposerLayout() {
   const modelSelect = byId("composerModelSelect");
   const toolSelect = byId("composerToolSelect");
   const mcpToolsSelect = byId("composerMcpToolsSelect");
+  const cloudControls = byId("composerCloudControls");
+  const issueNumberInput = byId("composerIssueNumberInput");
+  const issueNodeIdInput = byId("composerIssueNodeIdInput");
+  const cloudStatus = byId("composerCloudStatus");
   if (!composer) {
     return;
   }
@@ -734,6 +738,31 @@ function renderChatComposerLayout() {
       });
     }
   }
+  const isCopilotCloudDispatch = state.compose.service === "copilot" && state.compose.transport === "cloud";
+  const selectedIssueItem = selectedIssue();
+  if (isCopilotCloudDispatch && !state.compose.issueNumber && selectedIssueItem?.issueNumber) {
+    state.compose.issueNumber = selectedIssueItem.issueNumber;
+  }
+  if (issueNumberInput instanceof HTMLInputElement) {
+    issueNumberInput.value = state.compose.issueNumber ? String(state.compose.issueNumber) : "";
+  }
+  if (issueNodeIdInput instanceof HTMLInputElement) {
+    issueNodeIdInput.value = String(state.compose.issueNodeId || "");
+  }
+  if (cloudControls) {
+    cloudControls.classList.toggle("visible", isCopilotCloudDispatch);
+  }
+  if (cloudStatus) {
+    if (!isCopilotCloudDispatch) {
+      cloudStatus.textContent = "";
+    } else if (!state.runtime.dispatchConfig?.copilotCloudEnabled) {
+      cloudStatus.textContent = "Copilot cloud dispatch is disabled in settings (phoenixOps.copilotCloudEnabled=false).";
+    } else {
+      const repo = selectedIssueItem?.repo || state.runtime.workspaceRepo || "";
+      const issueNumber = state.compose.issueNumber || selectedIssueItem?.issueNumber || null;
+      cloudStatus.textContent = `Cloud target: ${repo || "(repo required)"} | Issue: ${issueNumber ? `#${issueNumber}` : "(required)"}`;
+    }
+  }
   autoResizeComposerInput();
   renderStopButtons();
 }
@@ -745,6 +774,8 @@ function refreshComposerSelectionState() {
   const modelSelect = byId("composerModelSelect");
   const toolSelect = byId("composerToolSelect");
   const mcpToolsSelect = byId("composerMcpToolsSelect");
+  const issueNumberInput = byId("composerIssueNumberInput");
+  const issueNodeIdInput = byId("composerIssueNodeIdInput");
 
   if (transportSelect instanceof HTMLSelectElement) {
     state.compose.transport = transportSelect.value;
@@ -769,6 +800,12 @@ function refreshComposerSelectionState() {
     state.compose.mcpTools = Array.from(mcpToolsSelect.selectedOptions)
       .map((option) => String(option.value || "").trim())
       .filter((entry) => entry.length > 0);
+  }
+  if (issueNumberInput instanceof HTMLInputElement) {
+    state.compose.issueNumber = normalizePositiveInteger(issueNumberInput.value);
+  }
+  if (issueNodeIdInput instanceof HTMLInputElement) {
+    state.compose.issueNodeId = String(issueNodeIdInput.value || "").trim();
   }
   ensureComposeDefaults();
   persistUiState();
@@ -1005,6 +1042,38 @@ function sendMessage() {
       contextItems: state.contextItems
     });
   } else {
+    const isCopilotCloudDispatch = state.compose.service === "copilot" && state.compose.transport === "cloud";
+    const selectedIssueItem = selectedIssue();
+    const issueNumber = isCopilotCloudDispatch
+      ? (state.compose.issueNumber || selectedIssueItem?.issueNumber || null)
+      : null;
+    const issueNodeId = isCopilotCloudDispatch
+      ? (String(state.compose.issueNodeId || "").trim() || null)
+      : null;
+    const repository = isCopilotCloudDispatch
+      ? (selectedIssueItem?.repo || state.runtime.workspaceRepo || null)
+      : null;
+    const branch = isCopilotCloudDispatch
+      ? (state.runtime.workspaceBranch || null)
+      : null;
+
+    if (isCopilotCloudDispatch && !state.runtime.dispatchConfig?.copilotCloudEnabled) {
+      appendChatRow("system", "Copilot cloud dispatch is disabled in settings.", null);
+      return;
+    }
+    if (isCopilotCloudDispatch && !issueNumber) {
+      appendChatRow("system", "Cloud dispatch requires an issue number. Select an issue or enter one in the composer.", null);
+      return;
+    }
+    if (isCopilotCloudDispatch && !repository) {
+      appendChatRow("system", "Cloud dispatch requires a repository. Select a board issue or open a workspace repository.", null);
+      return;
+    }
+    if (isCopilotCloudDispatch) {
+      state.compose.issueNumber = issueNumber;
+      persistUiState();
+    }
+
     const agentId = `${state.compose.service.toUpperCase()} ${state.compose.mode.toUpperCase()} ${modelInfo?.label ?? ""}`.trim();
     vscode.postMessage({
       type: "agentDispatch",
@@ -1016,11 +1085,17 @@ function sendMessage() {
       model: modelInfo?.id || state.compose.model,
       toolProfile: state.compose.tool,
       mcpTools: selectedMcpTools,
-      repository: null,
-      branch: null,
-      workspace: null
+      repository,
+      branch,
+      workspace: null,
+      issueNumber,
+      issueNodeId
     });
-    appendChatRow("system", `Dispatch requested: ${agentId} (${state.compose.transport})`, null);
+    appendChatRow(
+      "system",
+      `Dispatch requested: ${agentId} (${state.compose.transport}${issueNumber ? `, issue #${issueNumber}` : ""})`,
+      null
+    );
   }
 
   appendChatRow("user", outboundMessage, session?.sessionId ?? null);

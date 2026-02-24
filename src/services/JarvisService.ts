@@ -5,6 +5,7 @@ import {
   classifyPollinationsTransportFailure,
   parseRetryAfterSeconds
 } from "./PollinationsResilience";
+import { buildJarvisGeminiTtsStyleInstructions } from "../utils/jarvisPrompts";
 
 export interface JarvisConversationTurn {
   role: "user" | "assistant";
@@ -17,6 +18,11 @@ export interface JarvisServiceSettings {
   textModel: string;
   speechModel: string;
   voice: string;
+  ttsProvider?: string;
+  geminiApiKey?: string;
+  geminiModel?: string;
+  geminiVoice?: string;
+  ttsDebug?: boolean;
 }
 
 export interface JarvisSpeechResult {
@@ -37,6 +43,30 @@ interface PollinationsSpeechResponse {
   data?: unknown;
   mimeType?: unknown;
 }
+
+interface GeminiGenerateContentResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: unknown[];
+    };
+  }>;
+}
+
+interface GeminiInlineAudioPart {
+  data: string;
+  mimeType: string | null;
+}
+
+interface WavConversionOptions {
+  numChannels: number;
+  sampleRate: number;
+  bitsPerSample: number;
+}
+
+type JarvisTtsProvider = "gemini-with-fallback" | "gemini" | "pollinations";
+
+const DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts";
+const DEFAULT_GEMINI_TTS_VOICE = "Charon";
 
 function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
@@ -125,26 +155,61 @@ export class JarvisService {
   }
 
   async synthesizeSpeech(text: string, settings: JarvisServiceSettings, ttsInstructions?: string): Promise<JarvisSpeechResult> {
+    const provider = this.resolveTtsProvider(settings.ttsProvider);
+    const styleInstructions = asNonEmptyString(ttsInstructions) ?? buildJarvisGeminiTtsStyleInstructions("attentive");
+    const geminiApiKey = asNonEmptyString(settings.geminiApiKey);
+    const geminiModel = asNonEmptyString(settings.geminiModel) ?? DEFAULT_GEMINI_TTS_MODEL;
+    const geminiVoice = asNonEmptyString(settings.geminiVoice) ?? DEFAULT_GEMINI_TTS_VOICE;
+    const ttsDebug = Boolean(settings.ttsDebug);
+
+    if (provider !== "pollinations") {
+      if (!geminiApiKey) {
+        if (provider === "gemini") {
+          throw new Error(
+            "Gemini TTS is selected but no Gemini API key is configured. Set phoenixOps.jarvisGeminiApiKey."
+          );
+        }
+      } else {
+        try {
+          return await this.fetchGeminiSpeechAudio({
+            apiKey: geminiApiKey,
+            model: geminiModel,
+            voice: geminiVoice,
+            text,
+            styleInstructions,
+            debug: ttsDebug
+          });
+        } catch (error) {
+          if (provider === "gemini") {
+            throw error;
+          }
+          if (ttsDebug) {
+            // eslint-disable-next-line no-console
+            console.warn(`[jarvis-tts] Gemini synthesis failed; using Pollinations fallback: ${this.describeError(error)}`);
+          }
+        }
+      }
+    }
+
     const endpoint = `${this.resolvedBaseUrl(settings)}/v1/audio/speech`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-    const instructions = ttsInstructions ?? "Speak with a sophisticated British accent. Your delivery is measured, calm, and carries a dry wit.";
 
     try {
       const configuredModel = asNonEmptyString(settings.speechModel) ?? "tts-1";
       try {
-        return await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, instructions, settings.apiKey, controller.signal);
+        return await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, settings.apiKey, controller.signal);
       } catch (error) {
         let normalized = this.toNormalizedError(error, endpoint, "speech");
         if (this.isTimeoutFailure(normalized)) {
           try {
-            return await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, instructions, settings.apiKey, controller.signal);
+            return await this.fetchSpeechAudio(endpoint, configuredModel, settings.voice, text, settings.apiKey, controller.signal);
           } catch (retryError) {
             normalized = this.toNormalizedError(retryError, endpoint, "speech");
           }
         }
         if (this.shouldRetryModel(normalized, configuredModel, "tts-1")) {
-          return await this.fetchSpeechAudio(endpoint, "tts-1", settings.voice, text, instructions, settings.apiKey, controller.signal);
+          return await this.fetchSpeechAudio(endpoint, "tts-1", settings.voice, text, settings.apiKey, controller.signal);
         }
         throw normalized;
       }
@@ -214,7 +279,6 @@ export class JarvisService {
     model: string,
     voice: string,
     text: string,
-    instructions: string,
     apiKey: string,
     signal: AbortSignal
   ): Promise<JarvisSpeechResult> {
@@ -228,7 +292,6 @@ export class JarvisService {
           model,
           voice,
           input: text,
-          instructions,
           response_format: "mp3"
         })
       });
@@ -263,6 +326,243 @@ export class JarvisService {
       audioBase64: bytes.toString("base64"),
       mimeType: contentType && contentType.includes("audio/") ? contentType : "audio/mpeg"
     };
+  }
+
+  private resolveTtsProvider(rawProvider: string | undefined): JarvisTtsProvider {
+    const normalized = (rawProvider ?? "").trim().toLowerCase();
+    if (normalized === "gemini" || normalized === "pollinations" || normalized === "gemini-with-fallback") {
+      return normalized;
+    }
+    return "gemini-with-fallback";
+  }
+
+  private async fetchGeminiSpeechAudio(input: {
+    apiKey: string;
+    model: string;
+    voice: string;
+    text: string;
+    styleInstructions: string;
+    debug: boolean;
+  }): Promise<JarvisSpeechResult> {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(input.model)}:generateContent`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      let response: Response;
+      try {
+        response = await fetch(endpoint, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": input.apiKey
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  {
+                    text: this.buildGeminiSpeechPrompt(input.text, input.styleInstructions)
+                  }
+                ]
+              }
+            ],
+            generationConfig: {
+              temperature: 1,
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: input.voice
+                  }
+                }
+              }
+            }
+          })
+        });
+      } catch (error) {
+        throw new Error(`Gemini speech request failed: ${this.describeError(error)}`);
+      }
+
+      if (!response.ok) {
+        let details: string | null = null;
+        try {
+          details = (await response.text()).trim() || null;
+        } catch {
+          details = null;
+        }
+        throw new Error(`Gemini speech failed (HTTP ${response.status})${details ? `: ${details}` : ""}`);
+      }
+
+      const payload = (await response.json()) as GeminiGenerateContentResponse;
+      const extracted = this.extractGeminiInlineAudio(payload);
+      if (!extracted) {
+        throw new Error("Gemini speech response did not include inline audio.");
+      }
+
+      const normalized = this.normalizeGeminiAudio(extracted);
+      if (input.debug) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[jarvis-tts] Gemini synthesis ok (model=${input.model}, voice=${input.voice}, mimeType=${normalized.mimeType}).`
+        );
+      }
+      return normalized;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private buildGeminiSpeechPrompt(text: string, styleInstructions: string): string {
+    return [
+      "You are Jarvis, a British AI assistant with a sophisticated accent and personality.",
+      "Your task is to synthesize the following text-to-speech using these delivery guidelines:",
+      "",
+      "STYLE INSTRUCTIONS FOR TTS:",
+      styleInstructions,
+      "",
+      "Synthesize the text below with those exact speaking qualities.",
+      text
+    ].join("\n");
+  }
+
+  private extractGeminiInlineAudio(payload: GeminiGenerateContentResponse): GeminiInlineAudioPart | null {
+    const bytes: Buffer[] = [];
+    let mimeType: string | null = null;
+    const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+    for (const candidate of candidates) {
+      const parts = candidate?.content?.parts;
+      if (!Array.isArray(parts)) {
+        continue;
+      }
+      for (const part of parts) {
+        const inline = this.toGeminiInlineAudio(part);
+        if (!inline) {
+          continue;
+        }
+        try {
+          bytes.push(Buffer.from(inline.data, "base64"));
+          if (!mimeType && inline.mimeType) {
+            mimeType = inline.mimeType;
+          }
+        } catch {
+          // Skip malformed chunks and continue scanning.
+        }
+      }
+      if (bytes.length > 0) {
+        break;
+      }
+    }
+
+    if (bytes.length === 0) {
+      return null;
+    }
+
+    return {
+      data: Buffer.concat(bytes).toString("base64"),
+      mimeType
+    };
+  }
+
+  private toGeminiInlineAudio(part: unknown): GeminiInlineAudioPart | null {
+    if (!part || typeof part !== "object") {
+      return null;
+    }
+    const rawPart = part as Record<string, unknown>;
+    const inlineRaw = rawPart.inlineData ?? rawPart.inline_data;
+    if (!inlineRaw || typeof inlineRaw !== "object") {
+      return null;
+    }
+    const rawInline = inlineRaw as Record<string, unknown>;
+    const data = asNonEmptyString(rawInline.data);
+    if (!data) {
+      return null;
+    }
+    return {
+      data: normalizeAudioBase64(data),
+      mimeType: asNonEmptyString(rawInline.mimeType) ?? asNonEmptyString(rawInline.mime_type)
+    };
+  }
+
+  private normalizeGeminiAudio(inline: GeminiInlineAudioPart): JarvisSpeechResult {
+    const normalizedMime = (inline.mimeType ?? "").toLowerCase();
+    const pcm = this.parsePcmMimeType(normalizedMime);
+    if (!pcm) {
+      return {
+        audioBase64: normalizeAudioBase64(inline.data),
+        mimeType: inline.mimeType ?? "audio/wav"
+      };
+    }
+
+    const rawBytes = Buffer.from(inline.data, "base64");
+    const wavHeader = this.createWavHeader(rawBytes.length, pcm);
+    return {
+      audioBase64: Buffer.concat([wavHeader, rawBytes]).toString("base64"),
+      mimeType: "audio/wav"
+    };
+  }
+
+  private parsePcmMimeType(mimeType: string): WavConversionOptions | null {
+    if (!mimeType) {
+      return null;
+    }
+    const [fileType, ...params] = mimeType.split(";").map((entry) => entry.trim());
+    const [category, format] = fileType.split("/");
+    if (category !== "audio" || !format || !format.toLowerCase().startsWith("l")) {
+      return null;
+    }
+
+    const bits = Number.parseInt(format.slice(1), 10);
+    const options: WavConversionOptions = {
+      numChannels: 1,
+      sampleRate: 24_000,
+      bitsPerSample: Number.isFinite(bits) && bits > 0 ? bits : 16
+    };
+
+    for (const param of params) {
+      const [rawKey = "", rawValue = ""] = param.split("=").map((entry) => entry.trim().toLowerCase());
+      const numeric = Number.parseInt(rawValue, 10);
+      if (!Number.isFinite(numeric) || numeric <= 0) {
+        continue;
+      }
+      if (rawKey === "rate" || rawKey === "samplerate") {
+        options.sampleRate = numeric;
+      }
+      if (rawKey === "channels" || rawKey === "channel") {
+        options.numChannels = numeric;
+      }
+    }
+
+    return options;
+  }
+
+  private createWavHeader(dataLength: number, options: WavConversionOptions): Buffer {
+    const byteRate = options.sampleRate * options.numChannels * options.bitsPerSample / 8;
+    const blockAlign = options.numChannels * options.bitsPerSample / 8;
+    const buffer = Buffer.alloc(44);
+
+    buffer.write("RIFF", 0);
+    buffer.writeUInt32LE(36 + dataLength, 4);
+    buffer.write("WAVE", 8);
+    buffer.write("fmt ", 12);
+    buffer.writeUInt32LE(16, 16);
+    buffer.writeUInt16LE(1, 20);
+    buffer.writeUInt16LE(options.numChannels, 22);
+    buffer.writeUInt32LE(options.sampleRate, 24);
+    buffer.writeUInt32LE(byteRate, 28);
+    buffer.writeUInt16LE(blockAlign, 32);
+    buffer.writeUInt16LE(options.bitsPerSample, 34);
+    buffer.write("data", 36);
+    buffer.writeUInt32LE(dataLength, 40);
+    return buffer;
+  }
+
+  private describeError(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return String(error);
   }
 
   private buildHeaders(apiKey: string): Record<string, string> {

@@ -172,6 +172,15 @@ const defaultJarvisSpeechModel = jarvisApiKey ? "openai-audio" : "tts-1";
 const jarvisSpeechModel =
   (process.env.PHOENIX_EMBEDDED_JARVIS_SPEECH_MODEL ?? defaultJarvisSpeechModel).trim() || defaultJarvisSpeechModel;
 const jarvisVoice = (process.env.PHOENIX_EMBEDDED_JARVIS_VOICE ?? "onyx").trim() || "onyx";
+const rawJarvisTtsProvider = (process.env.PHOENIX_EMBEDDED_JARVIS_TTS_PROVIDER ?? "").trim().toLowerCase();
+const jarvisTtsProvider =
+  rawJarvisTtsProvider === "gemini" || rawJarvisTtsProvider === "pollinations"
+    ? rawJarvisTtsProvider
+    : "gemini-with-fallback";
+const jarvisGeminiApiKey = (process.env.PHOENIX_EMBEDDED_JARVIS_GEMINI_API_KEY ?? "").trim();
+const jarvisGeminiModel = (process.env.PHOENIX_EMBEDDED_JARVIS_GEMINI_MODEL ?? "gemini-2.5-flash-preview-tts").trim() || "gemini-2.5-flash-preview-tts";
+const jarvisGeminiVoice = (process.env.PHOENIX_EMBEDDED_JARVIS_GEMINI_VOICE ?? "Charon").trim() || "Charon";
+const jarvisTtsDebug = /^(1|true|yes|on)$/i.test((process.env.PHOENIX_EMBEDDED_JARVIS_TTS_DEBUG ?? "").trim());
 const jarvisHardCooldownSeconds = Math.min(1800, Math.max(30, Number(process.env.PHOENIX_EMBEDDED_JARVIS_HARD_COOLDOWN_SECONDS ?? 900)));
 const jarvisSoftCooldownSeconds = Math.min(1800, Math.max(15, Number(process.env.PHOENIX_EMBEDDED_JARVIS_SOFT_COOLDOWN_SECONDS ?? 120)));
 const MAX_AGENT_FEED = 500;
@@ -187,6 +196,11 @@ const jarvisRuntime = new EmbeddedJarvisPollinationsRuntime({
   textModel: jarvisTextModel,
   speechModel: jarvisSpeechModel,
   voice: jarvisVoice,
+  ttsProvider: jarvisTtsProvider,
+  geminiApiKey: jarvisGeminiApiKey,
+  geminiModel: jarvisGeminiModel,
+  geminiVoice: jarvisGeminiVoice,
+  ttsDebug: jarvisTtsDebug,
   hardCooldownSeconds: jarvisHardCooldownSeconds,
   softCooldownSeconds: jarvisSoftCooldownSeconds
 });
@@ -1049,7 +1063,12 @@ async function route(req: http.IncomingMessage, res: http.ServerResponse): Promi
         apiKeyConfigured: Boolean(jarvisApiKey),
         textModel: jarvisTextModel,
         speechModel: jarvisSpeechModel,
-        voice: jarvisVoice
+        voice: jarvisVoice,
+        ttsProvider: jarvisTtsProvider,
+        geminiApiKeyConfigured: Boolean(jarvisGeminiApiKey),
+        geminiModel: jarvisGeminiModel,
+        geminiVoice: jarvisGeminiVoice,
+        ttsDebug: jarvisTtsDebug
       },
       dataCounts: {
         agentSessions: snapshot.agents.sessions.length,

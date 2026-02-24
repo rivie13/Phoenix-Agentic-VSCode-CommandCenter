@@ -427,15 +427,57 @@ export function buildFallbackJarvisReply(
   return `${lead}${tone} ${waiting} session${waiting === 1 ? "" : "s"} waiting, ${pending} pending command${pending === 1 ? "" : "s"}, and ${failures} workflow run${failures === 1 ? "" : "s"} need attention. ${primaryLine} ${extra}`;
 }
 
+export function buildJarvisGeminiTtsStyleInstructions(
+  personality: JarvisPersonalityMode = "attentive"
+): string {
+  switch (personality) {
+    case "serene":
+      return [
+        "- Accent: British English (warm RP)",
+        "- Tone: Warm, relaxed, and reassuring",
+        "- Emotion: Contentment mixed with mild friendliness",
+        "- Pace: Unhurried, leisurely",
+        "- Warmth: Convey that everything is well in the world",
+        "- Attitude: Like a trusted butler ensuring all is calm"
+      ].join("\n");
+    case "attentive":
+      return [
+        "- Accent: British English (professional RP)",
+        "- Tone: Measured, composed, businesslike",
+        "- Emotion: Focused attention with hints of dry humor",
+        "- Pace: Normal, professional, crisp",
+        "- Clarity: Prioritize clear articulation for tactical information",
+        "- Attitude: Like a competent professional briefing a colleague"
+      ].join("\n");
+    case "alert":
+      return [
+        "- Accent: British English (crisp, professional)",
+        "- Tone: Slightly concerned, direct, purposeful",
+        "- Emotion: Alertness with underlying responsibility",
+        "- Pace: Slightly faster than normal, conveying urgency without panic",
+        "- Emphasis: Place subtle stress on action items",
+        "- Attitude: Like a reliable advisor noting that attention is genuinely needed"
+      ].join("\n");
+    case "escalating":
+      return [
+        "- Accent: British English (sharp, commanding)",
+        "- Tone: Serious, urgent, no-nonsense",
+        "- Emotion: Genuine concern for the operator, responsibility",
+        "- Pace: Controlled but fast, emphasizing importance",
+        "- Emphasis: Stress critical information heavily",
+        "- Attitude: Like a seasoned commander reporting a situation that demands immediate action"
+      ].join("\n");
+    default:
+      return buildJarvisGeminiTtsStyleInstructions("attentive");
+  }
+}
+
 /**
- * Placeholder kept for API compatibility. TTS instructions are not passed to
- * the speech endpoint — the `instructions` field is not supported by tts-1
- * and causes audio artifacts on Pollinations. Delivery tone is handled solely
- * through the chat system prompt.
- * @deprecated Do not pass the return value to the speech API.
+ * Compatibility wrapper for existing callsites.
+ * Returns Gemini style guidance text for the selected personality.
  */
-export function buildJarvisTtsInstructions(_personality: JarvisPersonalityMode = "attentive"): string {
-  return "";
+export function buildJarvisTtsInstructions(personality: JarvisPersonalityMode = "attentive"): string {
+  return buildJarvisGeminiTtsStyleInstructions(personality);
 }
 
 /**

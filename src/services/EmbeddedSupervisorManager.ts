@@ -12,6 +12,11 @@ export interface EmbeddedSupervisorConfig {
   jarvisTextModel: string;
   jarvisSpeechModel: string;
   jarvisVoice: string;
+  jarvisTtsProvider: "gemini-with-fallback" | "gemini" | "pollinations";
+  jarvisGeminiApiKey: string;
+  jarvisGeminiModel: string;
+  jarvisGeminiVoice: string;
+  jarvisTtsDebug: boolean;
   jarvisHardCooldownSeconds: number;
   jarvisSoftCooldownSeconds: number;
 }
@@ -68,6 +73,11 @@ export class EmbeddedSupervisorManager implements vscode.Disposable {
         PHOENIX_EMBEDDED_JARVIS_TEXT_MODEL: config.jarvisTextModel,
         PHOENIX_EMBEDDED_JARVIS_SPEECH_MODEL: config.jarvisSpeechModel,
         PHOENIX_EMBEDDED_JARVIS_VOICE: config.jarvisVoice,
+        PHOENIX_EMBEDDED_JARVIS_TTS_PROVIDER: config.jarvisTtsProvider,
+        PHOENIX_EMBEDDED_JARVIS_GEMINI_API_KEY: config.jarvisGeminiApiKey,
+        PHOENIX_EMBEDDED_JARVIS_GEMINI_MODEL: config.jarvisGeminiModel,
+        PHOENIX_EMBEDDED_JARVIS_GEMINI_VOICE: config.jarvisGeminiVoice,
+        PHOENIX_EMBEDDED_JARVIS_TTS_DEBUG: config.jarvisTtsDebug ? "1" : "0",
         PHOENIX_EMBEDDED_JARVIS_HARD_COOLDOWN_SECONDS: String(config.jarvisHardCooldownSeconds),
         PHOENIX_EMBEDDED_JARVIS_SOFT_COOLDOWN_SECONDS: String(config.jarvisSoftCooldownSeconds)
       },

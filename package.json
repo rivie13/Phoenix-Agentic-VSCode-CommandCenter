@@ -314,6 +314,31 @@
           "default": "auto",
           "description": "Terminal command used by 'Phoenix Ops: Sign In to Copilot CLI'. Set to 'auto' to prefer `copilot login` with fallback."
         },
+        "phoenixOps.codexCliPath": {
+          "type": "string",
+          "default": "codex",
+          "description": "Path or command name used by supervisor for Codex CLI launches."
+        },
+        "phoenixOps.copilotCliPath": {
+          "type": "string",
+          "default": "copilot",
+          "description": "Path or command name used by supervisor for Copilot CLI launches."
+        },
+        "phoenixOps.codexDefaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional default Codex model used when dispatcher payload omits model."
+        },
+        "phoenixOps.copilotDefaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional default Copilot model used when dispatcher payload omits model."
+        },
+        "phoenixOps.copilotCloudEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Copilot cloud issue dispatch from the Agent Hub composer."
+        },
         "phoenixOps.codexModelOptions": {
           "type": "array",
           "items": {
@@ -393,6 +418,36 @@
           "type": "string",
           "default": "onyx",
           "description": "Voice ID passed to Pollinations speech API."
+        },
+        "phoenixOps.jarvisTtsProvider": {
+          "type": "string",
+          "enum": [
+            "gemini-with-fallback",
+            "gemini",
+            "pollinations"
+          ],
+          "default": "gemini-with-fallback",
+          "description": "Jarvis TTS provider mode: Gemini first with Pollinations fallback, Gemini only, or Pollinations only."
+        },
+        "phoenixOps.jarvisGeminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Google Gemini API key used for Jarvis TTS synthesis."
+        },
+        "phoenixOps.jarvisGeminiModel": {
+          "type": "string",
+          "default": "gemini-2.5-flash-preview-tts",
+          "description": "Gemini model used for Jarvis TTS requests."
+        },
+        "phoenixOps.jarvisGeminiVoice": {
+          "type": "string",
+          "default": "Charon",
+          "description": "Gemini prebuilt voice name used for Jarvis TTS."
+        },
+        "phoenixOps.jarvisTtsDebug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Emit debug logs for Jarvis TTS provider selection and fallback behavior."
         },
         "phoenixOps.jarvisMaxAnnouncementsPerHour": {
           "type": "number",

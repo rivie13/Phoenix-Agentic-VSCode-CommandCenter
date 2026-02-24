@@ -315,7 +315,14 @@ export async function postRuntimeContext(
     workspaceRepo: workspaceContext?.repoSlug ?? null,
     workspaceBranch: workspaceContext?.branch ?? null,
     mcpTools: deps.resolveAvailableMcpToolIds(),
-    modelCatalog
+    modelCatalog,
+    dispatchConfig: {
+      codexCliPath: settings.codexCliPath,
+      copilotCliPath: settings.copilotCliPath,
+      codexDefaultModel: settings.codexDefaultModel || null,
+      copilotDefaultModel: settings.copilotDefaultModel || null,
+      copilotCloudEnabled: settings.copilotCloudEnabled
+    }
   };
   await deps.postWebviewResponse(sourceWebview, "runtimeContext", payload);
 }

@@ -13,6 +13,11 @@ export interface WorkspaceSupervisorConfig {
   jarvisTextModel: string;
   jarvisSpeechModel: string;
   jarvisVoice: string;
+  jarvisTtsProvider: "gemini-with-fallback" | "gemini" | "pollinations";
+  jarvisGeminiApiKey: string;
+  jarvisGeminiModel: string;
+  jarvisGeminiVoice: string;
+  jarvisTtsDebug: boolean;
   jarvisHardCooldownSeconds: number;
   jarvisSoftCooldownSeconds: number;
 }
@@ -209,7 +214,9 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
     this.log(`Launch command: ${command} ${args.join(" ")}`);
     this.log(
       `Jarvis env: baseUrl=${config.jarvisApiBaseUrl || "(auto)"} apiKeyConfigured=${Boolean(config.jarvisApiKey)} ` +
-      `textModel=${config.jarvisTextModel || "(auto)"} speechModel=${config.jarvisSpeechModel || "(auto)"} voice=${config.jarvisVoice || "onyx"}`
+      `textModel=${config.jarvisTextModel || "(auto)"} speechModel=${config.jarvisSpeechModel || "(auto)"} voice=${config.jarvisVoice || "onyx"} ` +
+      `ttsProvider=${config.jarvisTtsProvider} geminiKeyConfigured=${Boolean(config.jarvisGeminiApiKey)} ` +
+      `geminiModel=${config.jarvisGeminiModel || "(auto)"} geminiVoice=${config.jarvisGeminiVoice || "Charon"}`
     );
 
     this.child = spawn(command, args, {
@@ -224,6 +231,11 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
         SUPERVISOR_JARVIS_TEXT_MODEL: config.jarvisTextModel,
         SUPERVISOR_JARVIS_SPEECH_MODEL: config.jarvisSpeechModel,
         SUPERVISOR_JARVIS_VOICE: config.jarvisVoice,
+        SUPERVISOR_JARVIS_TTS_PROVIDER: config.jarvisTtsProvider,
+        SUPERVISOR_JARVIS_GEMINI_API_KEY: config.jarvisGeminiApiKey,
+        SUPERVISOR_JARVIS_GEMINI_MODEL: config.jarvisGeminiModel,
+        SUPERVISOR_JARVIS_GEMINI_VOICE: config.jarvisGeminiVoice,
+        SUPERVISOR_JARVIS_TTS_DEBUG: config.jarvisTtsDebug ? "1" : "0",
         SUPERVISOR_JARVIS_HARD_COOLDOWN_SECONDS: String(config.jarvisHardCooldownSeconds),
         SUPERVISOR_JARVIS_SOFT_COOLDOWN_SECONDS: String(config.jarvisSoftCooldownSeconds)
       },

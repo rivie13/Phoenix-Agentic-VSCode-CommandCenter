@@ -87,6 +87,8 @@ function bindEvents() {
   const composerModelSelect = byId("composerModelSelect");
   const composerToolSelect = byId("composerToolSelect");
   const composerMcpToolsSelect = byId("composerMcpToolsSelect");
+  const composerIssueNumberInput = byId("composerIssueNumberInput");
+  const composerIssueNodeIdInput = byId("composerIssueNodeIdInput");
   const collapseAllLanesButton = byId("collapseAllLanes");
   const expandAllLanesButton = byId("expandAllLanes");
   const collapseAllActionsButton = byId("collapseAllActions");
@@ -583,6 +585,15 @@ function bindEvents() {
       renderChatComposerLayout();
     });
   });
+  [composerIssueNumberInput, composerIssueNodeIdInput].forEach((node) => {
+    if (!node) {
+      return;
+    }
+    node.addEventListener("input", () => {
+      refreshComposerSelectionState();
+      renderChatComposerLayout();
+    });
+  });
 
   if (stopSessionFromChatButton) {
     stopSessionFromChatButton.addEventListener("click", () => requestStopSession());
@@ -628,6 +639,12 @@ function bindEvents() {
     Array.from(composerMcpToolsSelect.options).forEach((option) => {
       option.selected = selectedMcp.has(option.value);
     });
+  }
+  if (composerIssueNumberInput instanceof HTMLInputElement) {
+    composerIssueNumberInput.value = state.compose.issueNumber ? String(state.compose.issueNumber) : "";
+  }
+  if (composerIssueNodeIdInput instanceof HTMLInputElement) {
+    composerIssueNodeIdInput.value = String(state.compose.issueNodeId || "");
   }
 
   if (toggleContextPickerButton) {
@@ -777,6 +794,22 @@ window.addEventListener("message", (event) => {
       ? payload.mcpTools.map((entry) => String(entry || "").trim()).filter((entry) => entry.length > 0)
       : [];
     state.runtime.modelCatalog = normalizeModelCatalog(payload.modelCatalog);
+    const dispatchConfig = payload.dispatchConfig && typeof payload.dispatchConfig === "object" ? payload.dispatchConfig : {};
+    state.runtime.dispatchConfig = {
+      codexCliPath: typeof dispatchConfig.codexCliPath === "string" && dispatchConfig.codexCliPath.trim()
+        ? dispatchConfig.codexCliPath.trim()
+        : "codex",
+      copilotCliPath: typeof dispatchConfig.copilotCliPath === "string" && dispatchConfig.copilotCliPath.trim()
+        ? dispatchConfig.copilotCliPath.trim()
+        : "copilot",
+      codexDefaultModel: typeof dispatchConfig.codexDefaultModel === "string" && dispatchConfig.codexDefaultModel.trim()
+        ? dispatchConfig.codexDefaultModel.trim()
+        : null,
+      copilotDefaultModel: typeof dispatchConfig.copilotDefaultModel === "string" && dispatchConfig.copilotDefaultModel.trim()
+        ? dispatchConfig.copilotDefaultModel.trim()
+        : null,
+      copilotCloudEnabled: Boolean(dispatchConfig.copilotCloudEnabled)
+    };
     ensureComposeDefaults();
     persistUiState();
     if (!state.forms.issueCreateDraft.repo && state.runtime.workspaceRepo) {

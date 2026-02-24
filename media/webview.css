@@ -615,6 +615,22 @@ button:disabled {
   align-items: center;
 }
 
+.composer-cloud-controls {
+  display: none;
+  grid-template-columns: minmax(110px, 0.9fr) minmax(180px, 1.1fr);
+  gap: 6px;
+  margin-top: 8px;
+  align-items: center;
+}
+
+.composer-cloud-controls.visible {
+  display: grid;
+}
+
+#composerCloudStatus {
+  grid-column: 1 / -1;
+}
+
 .composer-select {
   border: 1px solid color-mix(in srgb, var(--vscode-input-border) 78%, transparent 22%);
   border-radius: 8px;
@@ -1265,6 +1281,10 @@ body.agent-only .context-picker-panel .inline-actions {
 
   .composer-controls {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .composer-cloud-controls {
+    grid-template-columns: 1fr;
   }
 
   .composer-actions {

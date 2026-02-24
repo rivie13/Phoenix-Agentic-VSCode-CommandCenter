@@ -941,8 +941,7 @@ export class CommandCenterController implements vscode.Disposable {
           authToken: supervisor.authToken,
           script: auditionScript,
           personality,
-          model: settings.jarvisTextModel,
-          voice: settings.jarvisVoice
+          model: settings.jarvisTextModel
         });
 
         let audioFilePath: string | null = null;
@@ -1073,6 +1072,11 @@ export class CommandCenterController implements vscode.Disposable {
         jarvisTextModel: settings.jarvisTextModel,
         jarvisSpeechModel: settings.jarvisSpeechModel,
         jarvisVoice: settings.jarvisVoice,
+        jarvisTtsProvider: settings.jarvisTtsProvider,
+        jarvisGeminiApiKey: settings.jarvisGeminiApiKey,
+        jarvisGeminiModel: settings.jarvisGeminiModel,
+        jarvisGeminiVoice: settings.jarvisGeminiVoice,
+        jarvisTtsDebug: settings.jarvisTtsDebug,
         jarvisHardCooldownSeconds: settings.jarvisPollinationsHardCooldownSeconds,
         jarvisSoftCooldownSeconds: settings.jarvisPollinationsSoftCooldownSeconds
       });
@@ -1270,13 +1274,23 @@ export class CommandCenterController implements vscode.Disposable {
     textModel: string;
     speechModel: string;
     voice: string;
+    ttsProvider: "gemini-with-fallback" | "gemini" | "pollinations";
+    geminiApiKey: string;
+    geminiModel: string;
+    geminiVoice: string;
+    ttsDebug: boolean;
   } {
     return {
       apiBaseUrl: settings.jarvisApiBaseUrl,
       apiKey: settings.jarvisApiKey,
       textModel: settings.jarvisTextModel,
       speechModel: settings.jarvisSpeechModel,
-      voice: settings.jarvisVoice
+      voice: settings.jarvisVoice,
+      ttsProvider: settings.jarvisTtsProvider,
+      geminiApiKey: settings.jarvisGeminiApiKey,
+      geminiModel: settings.jarvisGeminiModel,
+      geminiVoice: settings.jarvisGeminiVoice,
+      ttsDebug: settings.jarvisTtsDebug
     };
   }
 
@@ -1379,7 +1393,6 @@ export class CommandCenterController implements vscode.Disposable {
     script: string;
     personality: JarvisPersonalityMode;
     model: string;
-    voice: string;
   }): Promise<{
     text: string;
     source: string;
@@ -1409,7 +1422,6 @@ export class CommandCenterController implements vscode.Disposable {
           auto: false,
           includeAudio: true,
           personality: input.personality,
-          voice: input.voice,
           service: "jarvis",
           mode: "voice",
           model: input.model,

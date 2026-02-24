@@ -264,6 +264,10 @@ const state = {
     service: typeof persisted.composeService === "string" ? persisted.composeService : "codex",
     model: typeof persisted.composeModel === "string" ? persisted.composeModel : "gpt-5.3-codex",
     tool: typeof persisted.composeTool === "string" ? persisted.composeTool : "auto",
+    issueNumber: Number.isInteger(persisted.composeIssueNumber) && Number(persisted.composeIssueNumber) > 0
+      ? Number(persisted.composeIssueNumber)
+      : null,
+    issueNodeId: typeof persisted.composeIssueNodeId === "string" ? persisted.composeIssueNodeId : "",
     mcpTools: Array.isArray(persisted.composeMcpTools)
       ? persisted.composeMcpTools.map((entry) => String(entry || "").trim()).filter((entry) => entry.length > 0)
       : []
@@ -273,7 +277,14 @@ const state = {
     workspaceRepo: null,
     workspaceBranch: null,
     mcpTools: [],
-    modelCatalog: normalizeModelCatalog(null)
+    modelCatalog: normalizeModelCatalog(null),
+    dispatchConfig: {
+      codexCliPath: "codex",
+      copilotCliPath: "copilot",
+      codexDefaultModel: null,
+      copilotDefaultModel: null,
+      copilotCloudEnabled: false
+    }
   },
   jarvis: {
     enabled: true,
@@ -372,6 +383,8 @@ function persistUiState() {
     composeService: state.compose.service,
     composeModel: state.compose.model,
     composeTool: state.compose.tool,
+    composeIssueNumber: state.compose.issueNumber,
+    composeIssueNodeId: state.compose.issueNodeId,
     composeMcpTools: state.compose.mcpTools,
     contextItems: state.contextItems
   });
@@ -754,9 +767,28 @@ function getAvailableMcpToolIds() {
   return sanitizeToolIds(state.runtime.mcpTools);
 }
 
+function normalizePositiveInteger(value) {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value.trim());
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
 function ensureComposeDefaults() {
-  if (!["local", "cli"].includes(state.compose.transport)) {
+  if (!["local", "cli", "cloud"].includes(state.compose.transport)) {
     state.compose.transport = "local";
+  }
+  if (state.compose.service === "codex" && state.compose.transport === "cloud") {
+    state.compose.transport = "local";
+  }
+  if (state.compose.transport === "cloud" && state.compose.service !== "copilot") {
+    state.compose.service = "copilot";
   }
   const modelCatalog = getRuntimeModelCatalog();
   if (!modelCatalog[state.compose.service]) {
@@ -770,6 +802,8 @@ function ensureComposeDefaults() {
   if (!["auto", "repo", "terminal"].includes(state.compose.tool)) {
     state.compose.tool = "auto";
   }
+  state.compose.issueNumber = normalizePositiveInteger(state.compose.issueNumber);
+  state.compose.issueNodeId = String(state.compose.issueNodeId || "").trim();
   const availableMcpTools = new Set(getAvailableMcpToolIds());
   state.compose.mcpTools = sanitizeToolIds(state.compose.mcpTools).filter((entry) => availableMcpTools.has(entry));
 }
