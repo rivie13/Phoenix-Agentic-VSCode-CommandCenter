@@ -1,0 +1,457 @@
+# Sync project board fields from transient "signal labels".
+#
+# MCP tools can only set labels — they cannot manage GitHub Projects V2 fields.
+# This workflow bridges that gap:
+#   1. Agent adds a signal label like `set:priority:p1` via MCP issue_write.
+#   2. This workflow fires, maps the label to the correct project field + option.
+#   3. Sets the field value via GraphQL updateProjectV2ItemFieldValue.
+#   4. Removes the signal label so only real labels remain.
+#
+# Signal label format: set:<field>:<value>
+#   - set:priority:p0 | p1 | p2 | p3
+#   - set:size:xs | s | m | l
+#   - set:workmode:cloud-agent | local-ide | cli-agent
+#   - set:status:backlog | ready | in-progress | in-review | done
+#   - set:area:<area-name>
+#
+# Also supports workflow_dispatch to bootstrap signal labels in the repo.
+
+name: Sync Project Fields
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform"
+        required: true
+        type: choice
+        options:
+          - create-signal-labels
+
+env:
+  PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER || '3' }}
+
+jobs:
+  # ── Bootstrap: create all signal labels ─────────────────────────────
+  manage-signal-labels:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Manage signal labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const action = '${{ inputs.action }}';
+
+            const SIGNAL_LABELS = [
+              { name: 'set:priority:p0', color: 'B60205', description: 'Signal: set Priority → P0' },
+              { name: 'set:priority:p1', color: 'D93F0B', description: 'Signal: set Priority → P1' },
+              { name: 'set:priority:p2', color: 'FBCA04', description: 'Signal: set Priority → P2' },
+              { name: 'set:priority:p3', color: 'C2E0C6', description: 'Signal: set Priority → P3' },
+              { name: 'set:size:xs',     color: 'BFD4F2', description: 'Signal: set Size → XS' },
+              { name: 'set:size:s',      color: 'BFD4F2', description: 'Signal: set Size → S' },
+              { name: 'set:size:m',      color: 'BFD4F2', description: 'Signal: set Size → M' },
+              { name: 'set:size:l',      color: 'BFD4F2', description: 'Signal: set Size → L' },
+              { name: 'set:workmode:cloud-agent', color: 'D4C5F9', description: 'Signal: set Work mode → Cloud Agent' },
+              { name: 'set:workmode:local-ide',   color: 'D4C5F9', description: 'Signal: set Work mode → Local IDE' },
+              { name: 'set:workmode:cli-agent',   color: 'D4C5F9', description: 'Signal: set Work mode → CLI Agent' },
+              { name: 'set:area:extension',   color: '0075CA', description: 'Signal: set Area → extension' },
+              { name: 'set:area:controller',  color: '0075CA', description: 'Signal: set Area → controller' },
+              { name: 'set:area:webview',     color: '0075CA', description: 'Signal: set Area → webview' },
+              { name: 'set:area:services',    color: '0075CA', description: 'Signal: set Area → services' },
+              { name: 'set:area:utils',       color: '0075CA', description: 'Signal: set Area → utils' },
+              { name: 'set:area:jarvis',      color: '0075CA', description: 'Signal: set Area → jarvis' },
+              { name: 'set:area:supervisor',  color: '0075CA', description: 'Signal: set Area → supervisor' },
+              { name: 'set:area:agent',       color: '0075CA', description: 'Signal: set Area → agent' },
+              { name: 'set:area:board',       color: '0075CA', description: 'Signal: set Area → board' },
+              { name: 'set:area:actions',     color: '0075CA', description: 'Signal: set Area → actions' },
+              { name: 'set:area:prs',         color: '0075CA', description: 'Signal: set Area → prs' },
+              { name: 'set:area:tests',       color: '0075CA', description: 'Signal: set Area → tests' },
+              { name: 'set:area:docs',        color: '0075CA', description: 'Signal: set Area → docs' },
+              { name: 'set:area:ci',          color: '0075CA', description: 'Signal: set Area → ci' },
+              { name: 'set:status:backlog',     color: 'E4E669', description: 'Signal: set Status → Backlog' },
+              { name: 'set:status:ready',       color: 'E4E669', description: 'Signal: set Status → Ready' },
+              { name: 'set:status:in-progress', color: 'E4E669', description: 'Signal: set Status → In Progress' },
+              { name: 'set:status:in-review',   color: 'E4E669', description: 'Signal: set Status → In Review' },
+              { name: 'set:status:done',        color: 'E4E669', description: 'Signal: set Status → Done' },
+            ];
+
+            if (action === 'create-signal-labels') {
+              for (const label of SIGNAL_LABELS) {
+                try {
+                  await github.rest.issues.createLabel({ owner, repo, ...label });
+                  core.info(`Created label: ${label.name}`);
+                } catch (e) {
+                  if (e.status === 422) {
+                    core.info(`Label already exists: ${label.name}`);
+                  } else {
+                    core.warning(`Failed to create ${label.name}: ${e.message}`);
+                  }
+                }
+              }
+              core.info('All signal labels created.');
+            }
+
+  # ── Main: sync a signal label to a project field ───────────────────
+  sync-field:
+    if: >-
+      github.event_name == 'issues'
+      && startsWith(github.event.label.name, 'set:')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Update project field from signal label
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_BOARD_TOKEN }}
+          script: |
+            const label = context.payload.label.name;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueNumber = context.payload.issue.number;
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+
+            const removeSignalLabel = async () => {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  name: label,
+                });
+                core.info(`Removed signal label "${label}"`);
+              } catch (e) {
+                core.warning(`Failed to remove signal label "${label}": ${e.message}`);
+              }
+            };
+
+            // ── Parse signal label ──────────────────────────────────
+            const parts = label.split(':');
+            if (parts.length !== 3) {
+              core.warning(`Invalid signal label format: ${label} (expected set:<field>:<value>)`);
+              await removeSignalLabel();
+              return;
+            }
+            const normalizeKey = (value) => String(value || '')
+              .trim()
+              .toLowerCase()
+              .replace(/[_\s]+/g, '-');
+            const [, rawFieldKey, rawOptionKey] = parts;
+            const fieldKey = normalizeKey(rawFieldKey);
+            const optionKey = normalizeKey(rawOptionKey);
+
+            // ── Field → project field name + option matchers ────────
+            const FIELD_MAP = {
+              priority: {
+                fieldNames: ['Priority'],
+                options: {
+                  'p0': /p0/i,
+                  'p1': /p1/i,
+                  'p2': /p2/i,
+                  'p3': /p3/i,
+                },
+              },
+              size: {
+                fieldNames: ['Size'],
+                options: {
+                  'xs': /\bxs\b/i,
+                  's':  /\bs\b/i,
+                  'm':  /\bm\b/i,
+                  'l':  /\bl\b/i,
+                },
+              },
+              workmode: {
+                fieldNames: ['Work mode', 'Work Mode', 'Workmode'],
+                options: {
+                  'cloud-agent': /\bcloud\b.*\bagent\b|\bcloud\b/i,
+                  'local-ide':   /\blocal\b.*\bide\b|\blocal\b/i,
+                  'cli-agent':   /\bcli\b.*\bagent\b|\bcli.?agent\b|\bcli\b/i,
+                },
+              },
+              status: {
+                fieldNames: ['Status'],
+                options: {
+                  'backlog':     /backlog/i,
+                  'ready':       /\bready\b/i,
+                  'in-progress': /in.?progress/i,
+                  'in-review':   /in.?review/i,
+                  'done':        /\bdone\b/i,
+                },
+              },
+              area: {
+                fieldNames: ['Area'],
+                options: {
+                  'extension':  /\bextension\b/i,
+                  'controller': /\bcontroller\b/i,
+                  'webview':    /\bwebview\b/i,
+                  'services':   /\bservices?\b/i,
+                  'utils':      /\butils?\b/i,
+                  'jarvis':     /\bjarvis\b/i,
+                  'supervisor': /\bsupervisor\b/i,
+                  'agent':      /\bagent\b/i,
+                  'board':      /\bboard\b/i,
+                  'actions':    /\bactions\b/i,
+                  'prs':        /\bprs?\b/i,
+                  'tests':      /\btests?\b/i,
+                  'docs':       /\bdocs?\b/i,
+                  'ci':         /\bci\b/i,
+                },
+              },
+            };
+
+            const OPTION_ALIASES = {
+              workmode: {
+                local: 'local-ide',
+                localide: 'local-ide',
+                cli: 'cli-agent',
+                cliagent: 'cli-agent',
+              },
+              area: {
+                service: 'services',
+                util: 'utils',
+                pr: 'prs',
+                test: 'tests',
+                doc: 'docs',
+              },
+              status: {
+                inprogress: 'in-progress',
+                inreview: 'in-review',
+              },
+            };
+
+            const fieldConfig = FIELD_MAP[fieldKey];
+            if (!fieldConfig) {
+              core.warning(`Unknown field key "${fieldKey}" in signal label "${label}". Valid keys: ${Object.keys(FIELD_MAP).join(', ')}`);
+              await removeSignalLabel();
+              return;
+            }
+
+            const canonicalOptionKey = OPTION_ALIASES[fieldKey]?.[optionKey] || optionKey;
+            const optionMatcher = fieldConfig.options[canonicalOptionKey];
+            if (!optionMatcher) {
+              core.warning(`Unknown option "${optionKey}" for field "${fieldKey}". Valid options: ${Object.keys(fieldConfig.options).join(', ')}`);
+              await removeSignalLabel();
+              return;
+            }
+
+            // ── Workmode side-effects: manage cloud-agent label ─────
+            // Note: set:workmode:cloud-agent only updates the board field.
+            // The privileged `cloud-agent` label must be added directly by
+            // an authorized user — this workflow intentionally does NOT
+            // auto-add it, to preserve the permission guard in
+            // cloud-agent-assign.yml.
+
+            if (fieldKey === 'workmode' && canonicalOptionKey === 'local-ide') {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  name: 'cloud-agent',
+                });
+                core.info(`Removed real label "cloud-agent" from issue #${issueNumber}`);
+              } catch (e) {
+                core.info(`No real label "cloud-agent" to remove on issue #${issueNumber}`);
+              }
+            }
+
+            if (fieldKey === 'workmode' && canonicalOptionKey === 'cli-agent') {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  name: 'cloud-agent',
+                });
+                core.info(`Removed real label "cloud-agent" from issue #${issueNumber}`);
+              } catch (e) {
+                core.info(`No real label "cloud-agent" to remove on issue #${issueNumber}`);
+              }
+            }
+
+            // ── Find issue's project board item ─────────────────────
+            const itemQuery = `
+              query($owner: String!, $repo: String!, $issueNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $issueNumber) {
+                    id
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        project { id number }
+                      }
+                    }
+                  }
+                }
+              }`;
+
+            const itemResult = await github.graphql(itemQuery, { owner, repo, issueNumber });
+            const issueNodeId = itemResult.repository.issue.id;
+            let items = itemResult.repository.issue.projectItems.nodes;
+            let boardItem = items.find(i => i.project.number === projectNumber);
+
+            if (!boardItem) {
+              const projectQuery = `
+                query($owner: String!, $projectNumber: Int!) {
+                  user(login: $owner) {
+                    projectV2(number: $projectNumber) { id }
+                  }
+                }`;
+              const projectResult = await github.graphql(projectQuery, { owner, projectNumber });
+              const projectId = projectResult.user.projectV2.id;
+
+              const addMutation = `
+                mutation($projectId: ID!, $contentId: ID!) {
+                  addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                    item { id project { id number } }
+                  }
+                }`;
+              const addResult = await github.graphql(addMutation, { projectId, contentId: issueNodeId });
+              boardItem = addResult.addProjectV2ItemById.item;
+              core.info(`Added issue #${issueNumber} to project board`);
+            }
+
+            const projectId = boardItem.project.id;
+            const itemId = boardItem.id;
+
+            // ── Get field definitions ───────────────────────────────
+            const fieldQuery = `
+              query($projectId: ID!) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    fields(first: 30) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options { id name }
+                        }
+                        ... on ProjectV2TextField {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+
+            const fieldResult = await github.graphql(fieldQuery, { projectId });
+            const fields = (fieldResult.node.fields.nodes || []).filter((field) => field?.name);
+
+            const targetField = fields.find((field) =>
+              fieldConfig.fieldNames.some((name) => field.name.toLowerCase() === name.toLowerCase())
+            );
+            if (!targetField) {
+              core.warning(`Field "${fieldConfig.fieldNames.join(' / ')}" not found. Available: ${fields.map(f => f.name).join(', ')}`);
+              await removeSignalLabel();
+              return;
+            }
+
+            const updateSingleSelectMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }
+                ) { projectV2Item { id } }
+              }`;
+
+            const updateTextMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $text: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { text: $text }
+                  }
+                ) { projectV2Item { id } }
+              }`;
+
+            let appliedValue = null;
+
+            if (targetField.__typename === 'ProjectV2SingleSelectField') {
+              const targetOption = targetField.options.find((option) => optionMatcher.test(option.name));
+              if (!targetOption) {
+                core.warning(`No matching option for "${canonicalOptionKey}" in "${targetField.name}". Available: ${targetField.options.map((option) => option.name).join(', ')}`);
+                await removeSignalLabel();
+                return;
+              }
+
+              await github.graphql(updateSingleSelectMutation, {
+                projectId,
+                itemId,
+                fieldId: targetField.id,
+                optionId: targetOption.id,
+              });
+              appliedValue = targetOption.name;
+            } else if (targetField.__typename === 'ProjectV2TextField') {
+              const textByOption = {
+                'cloud-agent': 'Cloud Agent',
+                'local-ide': 'Local IDE',
+                'cli-agent': 'CLI Agent',
+                'backlog': 'Backlog',
+                'ready': 'Ready',
+                'in-progress': 'In Progress',
+                'in-review': 'In Review',
+                'done': 'Done',
+                'p0': 'P0',
+                'p1': 'P1',
+                'p2': 'P2',
+                'p3': 'P3',
+                'xs': 'XS',
+                's': 'S',
+                'm': 'M',
+                'l': 'L',
+                'extension': 'Extension',
+                'controller': 'Controller',
+                'webview': 'Webview',
+                'services': 'Services',
+                'utils': 'Utils',
+                'jarvis': 'Jarvis',
+                'supervisor': 'Supervisor',
+                'agent': 'Agent',
+                'board': 'Board',
+                'actions': 'Actions',
+                'prs': 'PRs',
+                'tests': 'Tests',
+                'docs': 'Docs',
+                'ci': 'CI',
+              };
+
+              const textValue = textByOption[canonicalOptionKey];
+              if (!textValue) {
+                core.warning(`Field "${targetField.name}" is a text field, but option "${canonicalOptionKey}" has no text mapping.`);
+                await removeSignalLabel();
+                return;
+              }
+
+              await github.graphql(updateTextMutation, {
+                projectId,
+                itemId,
+                fieldId: targetField.id,
+                text: textValue,
+              });
+              appliedValue = textValue;
+            } else {
+              core.warning(`Field "${targetField.name}" has unsupported type "${targetField.__typename}".`);
+              await removeSignalLabel();
+              return;
+            }
+
+            core.info(`✅ Set ${targetField.name} → ${appliedValue} for issue #${issueNumber}`);
+
+            // ── Remove the signal label ─────────────────────────────
+            await removeSignalLabel();

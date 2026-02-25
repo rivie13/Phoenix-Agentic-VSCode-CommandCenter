@@ -4,7 +4,12 @@
 Phoenix-Agentic-VSCode-CommandCenter/
 ├── .github/
 │   ├── instructions/          # Copilot instruction files
-│   └── skills/                # Copilot skill files
+│   ├── skills/                # Copilot skill files
+│   └── workflows/             # CI/CD workflows
+│       ├── ci.yml             # CI — lint, test, compile on push/PR
+│       ├── cloud-agent-assign.yml  # Cloud agent gating and assignment
+│       ├── project-board-sync.yml  # Auto-add issues/PRs to project board
+│       └── sync-project-fields.yml # Signal label → project field sync
 ├── .vscode/
 │   ├── launch.json            # Extension Development Host debug config
 │   ├── settings.json          # Workspace settings
@@ -75,4 +80,5 @@ Phoenix-Agentic-VSCode-CommandCenter/
 - `test/` — vitest test files
 - `docs/` — Architecture and planning documentation
 - `out/` — Compiled output, not committed to git
+- `.github/workflows/` — CI/CD and project board automation workflows
 - Extension manifest and VS Code contribution points live in `package.json`
