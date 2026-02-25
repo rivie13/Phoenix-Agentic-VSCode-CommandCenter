@@ -104,14 +104,19 @@ export function isNeedsAttention(conclusion: string | null): boolean {
   return ["failure", "cancelled", "action_required", "timed_out", "startup_failure"].includes(conclusion.toLowerCase());
 }
 
+export function isQueuedStatus(status: string): boolean {
+  const lowered = status.toLowerCase();
+  return lowered === "queued" || lowered === "waiting" || lowered === "pending" || lowered === "requested";
+}
+
 export function bucketRuns(runs: ActionRun[]): {
   queued: ActionRun[];
   inProgress: ActionRun[];
   needsAttention: ActionRun[];
 } {
   return {
-    queued: runs.filter((run) => run.status === "queued"),
-    inProgress: runs.filter((run) => run.status === "in_progress"),
+    queued: runs.filter((run) => isQueuedStatus(run.status)),
+    inProgress: runs.filter((run) => run.status.toLowerCase() === "in_progress"),
     needsAttention: runs.filter((run) => isNeedsAttention(run.conclusion))
   };
 }

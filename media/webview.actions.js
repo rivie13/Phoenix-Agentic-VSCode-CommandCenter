@@ -1,8 +1,13 @@
+function isQueuedStatus(status) {
+  const lowered = (status || "").toLowerCase();
+  return lowered === "queued" || lowered === "waiting" || lowered === "pending" || lowered === "requested";
+}
+
 function runBuckets() {
   const runs = state.snapshot?.actions?.runs || [];
   return {
-    queued: runs.filter((run) => run.status === "queued"),
-    inProgress: runs.filter((run) => run.status === "in_progress"),
+    queued: runs.filter((run) => isQueuedStatus(run.status)),
+    inProgress: runs.filter((run) => (run.status || "").toLowerCase() === "in_progress"),
     needsAttention: runs.filter((run) => ["failure", "cancelled", "action_required", "timed_out"].includes((run.conclusion || "").toLowerCase()))
   };
 }

@@ -1,5 +1,5 @@
 ﻿import { describe, expect, it } from "vitest";
-import { applyStreamEnvelope, bucketRuns, isNeedsAttention, mapBoardItems } from "../src/utils/transform";
+import { applyStreamEnvelope, bucketRuns, isNeedsAttention, isQueuedStatus, mapBoardItems } from "../src/utils/transform";
 
 describe("mapBoardItems", () => {
   it("maps raw project payload into board item shape", () => {
@@ -43,6 +43,21 @@ describe("run buckets", () => {
         number: 1
       },
       {
+        id: 4,
+        repo: "r/d",
+        workflowName: "D",
+        name: "D",
+        displayTitle: "D",
+        status: "waiting",
+        conclusion: null,
+        event: "push",
+        headBranch: "main",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        url: "https://example.com/4",
+        number: 4
+      },
+      {
         id: 2,
         repo: "r/b",
         workflowName: "B",
@@ -75,10 +90,31 @@ describe("run buckets", () => {
     ];
 
     const buckets = bucketRuns(runs);
-    expect(buckets.queued).toHaveLength(1);
+    expect(buckets.queued).toHaveLength(2);
     expect(buckets.inProgress).toHaveLength(1);
     expect(buckets.needsAttention).toHaveLength(1);
     expect(isNeedsAttention("action_required")).toBe(true);
+  });
+});
+
+describe("isQueuedStatus", () => {
+  it("returns true for all queued-like statuses", () => {
+    expect(isQueuedStatus("queued")).toBe(true);
+    expect(isQueuedStatus("waiting")).toBe(true);
+    expect(isQueuedStatus("pending")).toBe(true);
+    expect(isQueuedStatus("requested")).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(isQueuedStatus("Queued")).toBe(true);
+    expect(isQueuedStatus("WAITING")).toBe(true);
+    expect(isQueuedStatus("Pending")).toBe(true);
+  });
+
+  it("returns false for non-queued statuses", () => {
+    expect(isQueuedStatus("in_progress")).toBe(false);
+    expect(isQueuedStatus("completed")).toBe(false);
+    expect(isQueuedStatus("")).toBe(false);
   });
 });
 

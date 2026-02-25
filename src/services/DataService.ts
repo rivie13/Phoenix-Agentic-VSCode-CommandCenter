@@ -10,7 +10,7 @@ import {
   ProjectFieldName,
   ProjectSchema
 } from "../types";
-import { isNeedsAttention, mapBoardItems } from "../utils/transform";
+import { isNeedsAttention, isQueuedStatus, mapBoardItems } from "../utils/transform";
 import { inferRepositories, RepositoryDiscoveryMode, repoUrlToSlug } from "../utils/workspace";
 import { GhClient } from "./GhClient";
 
@@ -819,7 +819,7 @@ export class DataService {
           name: typeof raw.name === "string" ? raw.name : "",
           displayTitle: typeof raw.displayTitle === "string" ? raw.displayTitle : "",
           status: typeof raw.status === "string" ? raw.status : "unknown",
-          conclusion: typeof raw.conclusion === "string" ? raw.conclusion : null,
+          conclusion: typeof raw.conclusion === "string" && raw.conclusion.length > 0 ? raw.conclusion : null,
           event: typeof raw.event === "string" ? raw.event : "",
           headBranch: typeof raw.headBranch === "string" ? raw.headBranch : null,
           createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date(0).toISOString(),
@@ -859,7 +859,7 @@ export class DataService {
       .sort((left, right) => runTimestampMs(right) - runTimestampMs(left));
 
     const inspectRuns = recentRuns
-      .filter((run) => run.status === "queued" || run.status === "in_progress" || isNeedsAttention(run.conclusion))
+      .filter((run) => isQueuedStatus(run.status) || run.status === "in_progress" || isNeedsAttention(run.conclusion))
       .slice(0, 20);
 
     const jobs: ActionJob[] = [];
@@ -910,7 +910,7 @@ export class DataService {
           workflowName: run.workflowName,
           jobName: typeof raw.name === "string" ? raw.name : "job",
           status: typeof raw.status === "string" ? raw.status : "unknown",
-          conclusion: typeof raw.conclusion === "string" ? raw.conclusion : null,
+          conclusion: typeof raw.conclusion === "string" && raw.conclusion.length > 0 ? raw.conclusion : null,
           failedSteps: stepNames
         });
       }

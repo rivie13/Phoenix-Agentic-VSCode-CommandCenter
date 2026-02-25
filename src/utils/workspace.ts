@@ -9,7 +9,9 @@ const PHOENIX_REPO_NAMES = [
   "Phoenix-Agentic-Engine-Backend",
   "Phoenix-Agentic-Engine-Interface",
   "Phoenix-Agentic-Website-Frontend",
-  "Phoenix-Agentic-Website-Backend"
+  "Phoenix-Agentic-Website-Backend",
+  "Phoenix-Agentic-Workspace-Supervisor",
+  "Phoenix-Agentic-VSCode-CommandCenter"
 ];
 
 export function inferRepositories(owner: string, mode: RepositoryDiscoveryMode): string[] {
