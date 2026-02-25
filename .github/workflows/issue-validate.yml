@@ -170,18 +170,13 @@ jobs:
               'S — Small (1-4 hours)':            'S',
               'M — Medium (half day to full day)': 'M',
               'L — Large (multi-day)':            'L',
+              'XL — Extra large (multi-week)':    'XL',
             };
             const workModeMap = {
               'Local IDE':   'Local IDE',
               'CLI Agent':   'CLI Agent',
               'Cloud Agent': 'Cloud Agent',
             };
-            // Area: convert slash names to signal-label format for matching
-            const areaToSignal = (area) => area
-              .replace(/\//g, '-')
-              .replace(/\s+/g, '-')
-              .toLowerCase();
-
             const boardPriority = priorityMap[fields.priority] || fields.priority;
             const boardSize = sizeMap[fields.size] || fields.size;
             const boardWorkMode = workModeMap[fields.workMode] || fields.workMode;
