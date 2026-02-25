@@ -1,0 +1,456 @@
+# Securely assign Copilot coding agent when the `cloud-agent` label is added.
+# Guards:
+#   1. Actor must have write/maintain/admin permission (+ optional CLOUD_AGENT_ALLOWED_USERS allowlist).
+#   2. Issue must be in "Ready" status on the project board (prevents firing from Backlog).
+# On success:
+#   - Assigns Copilot coding agent to the issue.
+#   - Updates project board: Status → "In Progress", Work mode → "Cloud Agent".
+# Base branch resolution:
+#   1. Explicit override via issue label `base-branch:<branch>` (or `target-branch:<branch>`) or
+#      issue body line `Base branch: <branch>`.
+#   2. For task-like issues, if exactly one `feature/*` branch exists it is used; if multiple exist,
+#      a `feature/*` branch mentioned in the issue body is used.
+#   3. Falls back to repository default branch.
+
+name: Assign Copilot Cloud Agent
+
+on:
+  issues:
+    types: [labeled]
+
+env:
+  PROJECT_NUMBER: 3
+
+jobs:
+  assign-copilot:
+    if: github.event.label.name == 'cloud-agent'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+      actions: read
+    steps:
+      # ── 1. Permission guard ──────────────────────────────────────────
+      - name: Validate delegator permissions
+        id: guard
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const actor = context.actor;
+
+            let permission = 'none';
+            try {
+              const permissionResp = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner,
+                repo,
+                username: actor,
+              });
+              permission = permissionResp.data.permission;
+            } catch (error) {
+              permission = 'none';
+            }
+
+            const allowedByPermission = ['admin', 'maintain', 'write'].includes(permission);
+
+            let allowlistRaw = '';
+            try {
+              const variableResp = await github.rest.actions.getRepoVariable({
+                owner,
+                repo,
+                name: 'CLOUD_AGENT_ALLOWED_USERS',
+              });
+              allowlistRaw = variableResp.data.value || '';
+            } catch (error) {
+              allowlistRaw = '';
+            }
+
+            const allowlist = (allowlistRaw || '')
+              .split(',')
+              .map((entry) => entry.trim())
+              .filter(Boolean);
+            const allowedByAllowlist = allowlist.length === 0 ? true : allowlist.includes(actor);
+
+            const allowed = allowedByPermission && allowedByAllowlist;
+
+            core.setOutput('allowed', String(allowed));
+            core.setOutput('permission', permission);
+            core.setOutput('allowlistEnabled', String(allowlist.length > 0));
+
+      - name: Reject unauthorized delegation
+        if: steps.guard.outputs.allowed != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.issue.number;
+            const actor = context.actor;
+            const permission = '${{ steps.guard.outputs.permission }}';
+            const allowlistEnabled = '${{ steps.guard.outputs.allowlistEnabled }}' === 'true';
+
+            try {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number,
+                name: 'cloud-agent',
+              });
+            } catch (error) {
+            }
+
+            const reason = allowlistEnabled
+              ? `@${actor} is not authorized by CLOUD_AGENT_ALLOWED_USERS or lacks required repository permission.`
+              : `@${actor} has '${permission}' permission; write/maintain/admin is required to delegate to Copilot.`;
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: `⛔ Cloud-agent delegation blocked. ${reason}`,
+            });
+
+      # ── 2. Project board "Ready" guard ───────────────────────────────
+      - name: Check project board status
+        if: steps.guard.outputs.allowed == 'true'
+        id: board
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_BOARD_TOKEN }}
+          script: |
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+            const issueNumber = context.payload.issue.number;
+
+            // Fetch this issue's project-board item and its Status value
+            const query = `
+              query($owner: String!, $repo: String!, $issueNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $issueNumber) {
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        project { id number }
+                        fieldValueByName(name: "Status") {
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+
+            const result = await github.graphql(query, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issueNumber,
+            });
+
+            const items = result.repository.issue.projectItems.nodes;
+            const boardItem = items.find(i => i.project.number === projectNumber);
+
+            if (!boardItem) {
+              core.setOutput('ready', 'false');
+              core.setOutput('reason', 'Issue is not on the project board. Add it to the board and set status to **Ready** first.');
+              return;
+            }
+
+            const currentStatus = boardItem.fieldValueByName?.name || 'No Status';
+
+            if (currentStatus !== 'Ready') {
+              core.setOutput('ready', 'false');
+              core.setOutput('reason', `Issue status is **${currentStatus}** — only issues in **Ready** status can be assigned to the cloud agent. Move it to Ready first.`);
+              return;
+            }
+
+            core.setOutput('ready', 'true');
+            core.setOutput('projectId', boardItem.project.id);
+            core.setOutput('itemId', boardItem.id);
+
+      - name: Reject non-ready issue
+        if: steps.guard.outputs.allowed == 'true' && steps.board.outputs.ready != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.issue.number;
+
+            try {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number,
+                name: 'cloud-agent',
+              });
+            } catch (error) {}
+
+            const reason = `${{ steps.board.outputs.reason }}`;
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: `⛔ Cloud-agent assignment blocked.\n\n${reason}\n\n**Required steps:**\n1. Ensure the issue is on the [project board](https://github.com/users/rivie13/projects/3)\n2. Move the issue to **Ready** status\n3. Re-add the \`cloud-agent\` label`,
+            });
+
+      # ── 3. Assign Copilot & update board status ─────────────────────
+      - name: Assign Copilot coding agent and update project board
+        if: steps.guard.outputs.allowed == 'true' && steps.board.outputs.ready == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_BOARD_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.issue.number;
+            const projectId = '${{ steps.board.outputs.projectId }}';
+            const itemId = '${{ steps.board.outputs.itemId }}';
+
+            // Assign Copilot coding agent to the issue
+            const defaultBranch = context.payload.repository?.default_branch || 'main';
+            const issueBody = context.payload.issue?.body || '';
+            const issueLabels = (context.payload.issue?.labels || [])
+              .map((label) => (typeof label === 'string' ? label : label?.name))
+              .filter(Boolean);
+
+            const normalizeBranchName = (value) => String(value || '')
+              .trim()
+              .replace(/^refs\/heads\//i, '');
+
+            const branchExists = async (branch) => {
+              if (!branch) return false;
+              try {
+                await github.rest.repos.getBranch({ owner, repo, branch });
+                return true;
+              } catch (error) {
+                return false;
+              }
+            };
+
+            const explicitCandidates = [];
+
+            for (const rawLabel of issueLabels) {
+              const label = String(rawLabel);
+              const lower = label.toLowerCase();
+              const prefixes = ['base-branch:', 'base_branch:', 'target-branch:', 'target_branch:'];
+              const prefix = prefixes.find((p) => lower.startsWith(p));
+              if (prefix) {
+                explicitCandidates.push(normalizeBranchName(label.slice(prefix.length)));
+              }
+            }
+
+            const bodyPatterns = [
+              /^\s*(?:base[\s_-]*branch|target[\s_-]*branch|branch)\s*:\s*([^\s`]+)/gim,
+              /--base-branch\s+([^\s`]+)/gim,
+            ];
+
+            for (const pattern of bodyPatterns) {
+              let match;
+              while ((match = pattern.exec(issueBody)) !== null) {
+                explicitCandidates.push(normalizeBranchName(match[1]));
+              }
+            }
+
+            const dedupedExplicit = [...new Set(explicitCandidates.filter(Boolean))];
+
+            let resolvedBaseBranch = '';
+            let baseBranchSource = '';
+
+            for (const candidate of dedupedExplicit) {
+              if (await branchExists(candidate)) {
+                resolvedBaseBranch = candidate;
+                baseBranchSource = 'issue override';
+                break;
+              }
+            }
+
+            if (!resolvedBaseBranch) {
+              const lowerLabels = issueLabels.map((label) => String(label).toLowerCase());
+              const isTaskLikeIssue = lowerLabels.some((label) =>
+                ['task', 'bug', 'refactor', 'test', 'docs', 'chore'].includes(label)
+              );
+
+              if (isTaskLikeIssue) {
+                const featureBranches = [];
+                for (let page = 1; page <= 3; page++) {
+                  const resp = await github.rest.repos.listBranches({
+                    owner,
+                    repo,
+                    per_page: 100,
+                    page,
+                  });
+
+                  if (!resp.data?.length) {
+                    break;
+                  }
+
+                  featureBranches.push(
+                    ...resp.data
+                      .map((branch) => branch.name)
+                      .filter((name) => name.startsWith('feature/'))
+                  );
+
+                  if (resp.data.length < 100) {
+                    break;
+                  }
+                }
+
+                const uniqueFeatureBranches = [...new Set(featureBranches)];
+
+                if (uniqueFeatureBranches.length === 1) {
+                  resolvedBaseBranch = uniqueFeatureBranches[0];
+                  baseBranchSource = 'single feature/* branch';
+                } else if (uniqueFeatureBranches.length > 1) {
+                  const mentioned = uniqueFeatureBranches.find((branch) =>
+                    issueBody.toLowerCase().includes(branch.toLowerCase())
+                  );
+                  if (mentioned) {
+                    resolvedBaseBranch = mentioned;
+                    baseBranchSource = 'feature branch mentioned in issue';
+                  }
+                }
+              }
+            }
+
+            if (!resolvedBaseBranch) {
+              resolvedBaseBranch = defaultBranch;
+              baseBranchSource = 'repository default';
+            }
+
+            const assignmentResp = await github.request(
+              'POST /repos/{owner}/{repo}/issues/{issue_number}/assignees',
+              {
+                owner,
+                repo,
+                issue_number,
+                assignees: ['copilot-swe-agent[bot]'],
+                agent_assignment: {
+                  target_repo: `${owner}/${repo}`,
+                  base_branch: resolvedBaseBranch,
+                  custom_instructions: '',
+                  custom_agent: '',
+                  model: 'gpt-5.3-codex',
+                },
+                headers: {
+                  Accept: 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                },
+              }
+            );
+
+            const assignees = assignmentResp?.data?.assignees || [];
+            const copilotAssigned = assignees.some((assignee) => {
+              const login = (assignee?.login || '').toLowerCase();
+              return login === 'copilot-swe-agent' || login === 'copilot-swe-agent[bot]';
+            });
+
+            if (!copilotAssigned) {
+              throw new Error('Copilot coding agent assignment was not applied by the API response.');
+            }
+
+            // Fetch project field definitions (Status + Work mode)
+            const fieldQuery = `
+              query($projectId: ID!) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    fields(first: 30) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options { id name }
+                        }
+                        ... on ProjectV2TextField {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+
+            const fieldResult = await github.graphql(fieldQuery, { projectId });
+            const fields = (fieldResult.node.fields.nodes || []).filter((field) => field?.name);
+
+            const updateSingleSelectMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }
+                ) { projectV2Item { id } }
+              }`;
+
+            const updateTextMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $text: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { text: $text }
+                  }
+                ) { projectV2Item { id } }
+              }`;
+
+            const updates = [];
+
+            // Update Status → "In Progress"
+            const statusField = fields.find(f => f.name === 'Status');
+            if (statusField) {
+              const inProgress = statusField.options.find(o => o.name === 'In Progress');
+              if (inProgress) {
+                await github.graphql(updateSingleSelectMutation, {
+                  projectId, itemId,
+                  fieldId: statusField.id,
+                  optionId: inProgress.id,
+                });
+                updates.push('Status → **In Progress**');
+              }
+            }
+
+            // Update Work mode → "Cloud Agent"
+            const workModeField = fields.find((field) =>
+              ['work mode', 'work Mode', 'workmode'].includes((field.name || '').toLowerCase())
+            );
+            if (workModeField) {
+              if (workModeField.__typename === 'ProjectV2SingleSelectField') {
+                const cloudAgent = workModeField.options.find((option) => option.name === 'Cloud Agent');
+                if (cloudAgent) {
+                  await github.graphql(updateSingleSelectMutation, {
+                    projectId,
+                    itemId,
+                    fieldId: workModeField.id,
+                    optionId: cloudAgent.id,
+                  });
+                  updates.push('Work mode → **Cloud Agent**');
+                }
+              } else if (workModeField.__typename === 'ProjectV2TextField') {
+                await github.graphql(updateTextMutation, {
+                  projectId,
+                  itemId,
+                  fieldId: workModeField.id,
+                  text: 'Cloud Agent',
+                });
+                updates.push('Work mode → **Cloud Agent**');
+              }
+            }
+
+            const boardNote = updates.length > 0
+              ? `\n📋 Board updated: ${updates.join(', ')}`
+              : '';
+            const branchNote = `\n🌿 Base branch: \`${resolvedBaseBranch}\` (${baseBranchSource})`;
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body: `🤖 Copilot coding agent has been assigned via the \`cloud-agent\` label.${boardNote}${branchNote}`,
+            });
