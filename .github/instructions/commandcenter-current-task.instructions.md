@@ -1,52 +1,73 @@
-# Command Center — Current Task
+# PRIORITY — Board-Driven Task Context
 
-## Task Lifecycle (Ralph Loop)
+## Single source of truth
 
-Every task follows the **Ralph Loop** — a closed-loop feedback cycle:
+Use the **Phoenix Project Board** as the only task state source:
 
-```
-Identify → Plan → Implement → Verify → Complete → Update
-```
+- Board URL: https://github.com/users/rivie13/projects/3
+- Status flow: Backlog → Ready → Claimed → In Progress → QA Required → QA Feedback → In Review → Done
 
-### 1. Identify
+Do not use local filesystem artifacts for coordination.
 
-- Read the linked GitHub issue fully
-- Check the project board for current status/signal labels
-- Confirm the task is not blocked by another issue
+## Session start behavior
 
-### 2. Plan
+At the start of each session:
 
-- Design the approach before writing code
-- For multi-file changes, list affected files and the order of changes
-- For webview changes, distinguish between `media/` (view) and `src/` (logic) work
+1. Confirm the assigned issue/task from the incoming execution context (dispatcher prompt, local user instruction, or cloud assignment context).
+2. Verify the assignment exists on the board and confirm lock/dependency eligibility (`Area`, `Lock Key`, `Needed Files`, `Depends On`).
+3. Study the assignment context (issue body, acceptance criteria, linked PR/comments, dependency notes) before implementation.
+4. Execute the assignment and report checkpoints to board/issue/PR context.
 
-### 3. Implement
+If a side task appears, treat it as a separate board item and keep references explicit via issue links/sub-issues.
 
-- One logical change per commit
-- Stay within the scope of the task — do not refactor unrelated code
-- Follow conventions in `commandcenter-coding-conventions.instructions.md`
+If no assignment is explicit, ask for assignment clarification (or only then select a ready unblocked item).
 
-### 4. Verify
+## Concurrent task awareness
 
-- Run `npm run verify` (lint + test + compile) — must pass
-- Test the extension in the Extension Development Host (F5) when changes affect UI
-- Test webview interactions manually when rendering logic changes
+Use board-native concurrency controls only:
 
-### 5. Complete
+- Check active overlaps on `Lock Key` / `Needed Files` / `Area`.
+- Verify all `Depends On` prerequisites are complete.
+- If conflict/block exists, stop and report blocker context to the user.
 
-- Push the branch and create a PR using GitHub MCP tools
-- Link the PR to the originating issue
-- Request review if required
+## Task lifecycle (Ralph Loop)
 
-### 6. Update
+The loop is board-driven:
 
-- Update the project board field via Command Center or MCP tools
-- Update instruction files if the change affects architecture, conventions, or structure
-- Mark the issue as completed after PR is merged
+1. **Confirm Assignment**: identify assigned issue from dispatcher/local/cloud context and verify board linkage
+2. **Study + Work**: review assignment context, implement task, and post progress on board/issue/PR context
+3. **Complete**: verify acceptance criteria and move status to In Review/Done
+4. **Next**: publish completion and await the next assignment
 
-## Focus Rules
+## Issue hierarchy
 
-- Only one task in-progress at a time
-- Use the todo list tool to track multi-step work
-- If blocked, document the blocker and switch to the next unblocked task
-- Always check `commandcenter-roadmap.instructions.md` for priority context
+Use GitHub sub-issues for structured work: **Epic** → **Feature** → **Task**. Sub-issues can cross repos.
+
+## Cloud agent assignment
+
+`cloud-agent` labeling remains gated by board readiness:
+
+- Issue must be in **Ready** status
+- Workflow assigns Copilot and updates board to In Progress + Cloud Agent mode
+
+## Agent responsibilities — branches, PRs, issues
+
+Agents must manage their own git lifecycle:
+
+- Create branch, commit, push, open PR, and close issues explicitly
+- Update board metadata/status as work progresses
+- Release lock metadata on completion/failure/abandon
+
+Human actions should be limited to merge decisions (and conflict resolution when needed).
+
+## Cross-repo coordination
+
+When work depends on other repos:
+
+- Model dependency on the board/issue links (sub-issues, `Depends On`)
+- Do not rely on local files for cross-repo state
+- Related repos: Supervisor (`rivie13/Phoenix-Agentic-Workspace-Supervisor`), Backend (`rivie13/Phoenix-Agentic-Engine-Backend`)
+
+## Privacy
+
+This repo is **public**. Keep progress notes, issues, and PR text free of secrets or private strategy details.

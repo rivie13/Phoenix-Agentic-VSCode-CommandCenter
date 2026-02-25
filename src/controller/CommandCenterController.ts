@@ -145,7 +145,7 @@ const JARVIS_STARTUP_PRIOR_SUMMARY_COUNT = 3;
 type StartupTerminalService = CliAuthService | "claude" | "gemini";
 type WebviewCliAuthService = CliAuthService | "gemini";
 type WebviewCliAuthStatus = Omit<CliAuthStatus, "service"> & { service: WebviewCliAuthService };
-const STARTUP_TERMINAL_SERVICES: readonly StartupTerminalService[] = ["codex", "copilot", "claude", "gemini"];
+const STARTUP_TERMINAL_SERVICES: readonly StartupTerminalService[] = ["codex", "copilot", "gemini", "claude"];
 const AUTH_TRACKED_STARTUP_SERVICES: readonly CliAuthService[] = ["codex", "copilot"];
 const STARTUP_INIT_BLOCKING_BUDGET_MS = 1500;
 const STARTUP_CLI_BOOTSTRAP_DEFER_MS = 2500;
@@ -321,6 +321,13 @@ export class CommandCenterController implements vscode.Disposable {
     await this.refreshNow("manual");
   }
 
+  async openSettingsCommand(): Promise<void> {
+    await vscode.commands.executeCommand(
+      "workbench.action.openSettings",
+      "@ext:rivie13.phoenix-vscode-command-center"
+    );
+  }
+
   async signInCommand(): Promise<void> {
     try {
       await vscode.window.withProgress(
@@ -352,7 +359,8 @@ export class CommandCenterController implements vscode.Disposable {
 
   async signInCodexCliCommand(): Promise<void> {
     const settings = this.getRuntimeSettings();
-    this.logInfo(`[auth:codex] sign-in requested cliPath=${settings.codexCliPath}`);
+    const resolvedCodexCliPath = this.resolveStartupServiceCliPath("codex", settings);
+    this.logInfo(`[auth:codex] sign-in requested cliPath=${resolvedCodexCliPath}`);
     try {
       await vscode.window.withProgress(
         {
@@ -376,7 +384,7 @@ export class CommandCenterController implements vscode.Disposable {
             }
           };
 
-          const result = await runCodexDeviceAuthSignIn(settings.codexCliPath, onPromptDiscovered, (line) => {
+          const result = await runCodexDeviceAuthSignIn(resolvedCodexCliPath, onPromptDiscovered, (line) => {
             this.logInfo(`[auth:codex] ${line}`);
           });
           if (!result.ok) {
@@ -397,9 +405,16 @@ export class CommandCenterController implements vscode.Disposable {
 
   async signInCopilotCliCommand(): Promise<void> {
     this.logInfo("[auth:copilot] sign-in requested.");
+    const settings = this.getRuntimeSettings();
+    const resolvedCopilotCliPath = this.resolveStartupServiceCliPath("copilot", settings);
+    const copilotInvocation = parseCliInvocation(resolvedCopilotCliPath, "copilot");
+    const resolvedCopilotLoginCommand = formatCliInvocationForTerminal({
+      command: copilotInvocation.command,
+      baseArgs: [...copilotInvocation.baseArgs, "login"]
+    });
     const execution = await runAuthCommandFromSetting(
       "copilotCliAuthCommand",
-      ["copilot login", "gh auth login --web"],
+      [resolvedCopilotLoginCommand, "copilot login", "npx -y @github/copilot login", "gh auth login --web"],
       "Copilot CLI"
     );
     if (execution) {
@@ -1369,6 +1384,10 @@ export class CommandCenterController implements vscode.Disposable {
     }
 
     try {
+      const resolvedCodexCliPath = this.resolveStartupServiceCliPath("codex", settings);
+      const resolvedCopilotCliPath = this.resolveStartupServiceCliPath("copilot", settings);
+      const resolvedClaudeCliPath = this.resolveStartupServiceCliPath("claude", settings);
+      const resolvedGeminiCliPath = this.resolveStartupServiceCliPath("gemini", settings);
       this.logInfo(`Ensuring workspace supervisor is running at ${baseUrl}.`);
       const startedBaseUrl = await this.workspaceSupervisorManager.ensureStarted({
         baseUrl,
@@ -1376,10 +1395,10 @@ export class CommandCenterController implements vscode.Disposable {
         repoPath: settings.workspaceSupervisorRepoPath,
         startTimeoutMs: settings.workspaceSupervisorStartTimeoutMs,
         runBootstrapOnAutoStart: settings.workspaceSupervisorRunBootstrapOnAutoStart,
-        codexCliPath: settings.codexCliPath,
-        copilotCliPath: settings.copilotCliPath,
-        claudeCliPath: settings.claudeCliPath,
-        geminiCliPath: settings.geminiCliPath,
+        codexCliPath: resolvedCodexCliPath,
+        copilotCliPath: resolvedCopilotCliPath,
+        claudeCliPath: resolvedClaudeCliPath,
+        geminiCliPath: resolvedGeminiCliPath,
         jarvisApiBaseUrl: settings.jarvisApiBaseUrl,
         jarvisApiKey: settings.jarvisApiKey,
         jarvisTextModel: settings.jarvisTextModel,
@@ -1396,6 +1415,9 @@ export class CommandCenterController implements vscode.Disposable {
       });
       this.logInfo(`Workspace supervisor online at ${startedBaseUrl}.`);
       await this.postStatus(`Workspace supervisor online at ${startedBaseUrl}`, "ok");
+      if (!this.startupCliBootstrapDone && !this.startupCliBootstrapInFlight) {
+        this.scheduleStartupCliBootstrap();
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logError(`Workspace supervisor startup failed: ${message}`);
@@ -2400,7 +2422,12 @@ export class CommandCenterController implements vscode.Disposable {
       copilot,
       gemini
     };
-    const payloadKey = JSON.stringify(payload);
+    const payloadKey = JSON.stringify({
+      ok: payload.ok,
+      codex: this.toComparableWebviewCliAuthStatus(payload.codex),
+      copilot: this.toComparableWebviewCliAuthStatus(payload.copilot),
+      gemini: this.toComparableWebviewCliAuthStatus(payload.gemini)
+    });
     if (payloadKey === this.lastPostedAuthPayload) {
       return;
     }
@@ -2413,6 +2440,13 @@ export class CommandCenterController implements vscode.Disposable {
         `gemini=${gemini.state}/${gemini.summary}`
     );
     await this.postMessageToAllWebviews("auth", payload);
+  }
+
+  private toComparableWebviewCliAuthStatus(
+    status: WebviewCliAuthStatus
+  ): Omit<WebviewCliAuthStatus, "checkedAt"> {
+    const { checkedAt: _checkedAt, ...comparable } = status;
+    return comparable;
   }
 
   private latestTerminalSessionForService(
@@ -2506,7 +2540,7 @@ export class CommandCenterController implements vscode.Disposable {
     this.logInfo(`[auth] refresh start services=${services.join(",")}`);
     const results = await Promise.all(
       services.map(async (service) => {
-        const cliPath = service === "codex" ? settings.codexCliPath : settings.copilotCliPath;
+        const cliPath = this.resolveStartupServiceCliPath(service, settings);
         try {
           const status = await probeCliAuthStatus(service, cliPath, (line) => {
             this.logInfo(`[auth:${service}] ${line}`);
@@ -2593,6 +2627,36 @@ export class CommandCenterController implements vscode.Disposable {
     return settings.geminiCliPath;
   }
 
+  private startupServiceFallbackCliPath(service: StartupTerminalService): string {
+    if (service === "codex") {
+      return "npx -y @openai/codex";
+    }
+    if (service === "copilot") {
+      return "npx -y @github/copilot";
+    }
+    if (service === "claude") {
+      return "npx -y @anthropic-ai/claude-code";
+    }
+    return "npx -y @google/gemini-cli";
+  }
+
+  private resolveStartupServiceCliPath(
+    service: StartupTerminalService,
+    settings: ReturnType<DataService["getSettings"]>
+  ): string {
+    const configured = this.startupServiceCliPath(service, settings).trim();
+    const fallback = this.startupServiceFallbackCliPath(service).trim();
+    const candidates = [configured, fallback].filter((entry) => entry.length > 0);
+
+    for (const candidate of candidates) {
+      if (this.isCliCommandAvailable(candidate, service)) {
+        return candidate;
+      }
+    }
+
+    return candidates[0] ?? service;
+  }
+
   private startupServiceInstallCommand(
     service: StartupTerminalService,
     settings: ReturnType<DataService["getSettings"]>
@@ -2609,8 +2673,16 @@ export class CommandCenterController implements vscode.Disposable {
     return settings.geminiCliInstallCommand;
   }
 
-  private startupServiceSignInCommand(service: CliAuthService): string {
-    return service === "codex" ? "codex login" : "copilot login";
+  private startupServiceSignInCommand(
+    service: CliAuthService,
+    settings: ReturnType<DataService["getSettings"]>
+  ): string {
+    const cliPath = this.resolveStartupServiceCliPath(service, settings);
+    const invocation = parseCliInvocation(cliPath, service);
+    return formatCliInvocationForTerminal({
+      command: invocation.command,
+      baseArgs: [...invocation.baseArgs, "login"]
+    });
   }
 
   private resolveCliSignInCommand(settingKey: string, fallbackCommands: string[]): string {
@@ -2807,11 +2879,22 @@ export class CommandCenterController implements vscode.Disposable {
       return;
     }
 
+    let bootstrapNeedsRetry = false;
     this.startupCliBootstrapInFlight = true;
     try {
+      if (settings.cliStartupSpawnPtyTerminals || settings.cliStartupAutoSignIn) {
+        await this.ensureWorkspaceSupervisorStarted();
+        const supervisorConnection = this.configuredSupervisorConnection();
+        await this.waitForSupervisorSnapshotReady(
+          supervisorConnection.baseUrl,
+          supervisorConnection.authToken,
+          Math.min(20_000, settings.workspaceSupervisorStartTimeoutMs)
+        );
+      }
+
       if (settings.cliStartupAutoInstallMissing) {
         for (const service of STARTUP_TERMINAL_SERVICES) {
-          const cliPath = this.startupServiceCliPath(service, settings);
+          const cliPath = this.resolveStartupServiceCliPath(service, settings);
           if (this.isCliCommandAvailable(cliPath, service)) {
             continue;
           }
@@ -2839,8 +2922,44 @@ export class CommandCenterController implements vscode.Disposable {
       await this.refreshCliAuthStatus([...AUTH_TRACKED_STARTUP_SERVICES]);
 
       if (settings.cliStartupSpawnPtyTerminals) {
+        let bootstrapDispatchErrors = 0;
         for (const service of STARTUP_TERMINAL_SERVICES) {
-          await this.ensureStartupPtyTerminal(service);
+          try {
+            await this.ensureStartupPtyTerminal(service);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.logWarn(`startup terminal bootstrap skipped for ${service}: ${message}`);
+            bootstrapDispatchErrors += 1;
+          }
+        }
+
+        // The supervisor spawns PTYs asynchronously; sessions appear in the snapshot only
+        // after the SSE event propagates back to this extension host. Wait up to 8 s so that
+        // canSendTerminalInput() returns true before we check auth state and send sign-in commands.
+        const ptysToAwait = STARTUP_TERMINAL_SERVICES.map((s) => this.startupTerminalSessionId(s));
+        const waitStartMs = Date.now();
+        while (Date.now() - waitStartMs < 8000 && !this.disposed) {
+          if (ptysToAwait.every((sid) => this.canSendTerminalInput(sid))) {
+            break;
+          }
+          await this.refreshFromSupervisor("poll");
+          await this.sleep(400);
+        }
+
+        const readiness = ptysToAwait.map((sid) => ({ sessionId: sid, ready: this.canSendTerminalInput(sid) }));
+        this.logInfo(
+          `startup terminals ready: ${readiness.map((state) => `${state.sessionId}=${state.ready}`).join(", ")}`
+        );
+
+        const notReadySessions = readiness.filter((state) => !state.ready).map((state) => state.sessionId);
+        if (bootstrapDispatchErrors > 0 || notReadySessions.length > 0) {
+          bootstrapNeedsRetry = true;
+          this.logWarn(
+            `startup terminal bootstrap incomplete: dispatchErrors=${bootstrapDispatchErrors} ` +
+            `notReady=${notReadySessions.join(",") || "none"}.`
+          );
+          await this.postStatus("Startup terminals are still provisioning; retrying bootstrap.", "warn");
+          return;
         }
       }
 
@@ -2860,7 +2979,7 @@ export class CommandCenterController implements vscode.Disposable {
             continue;
           }
 
-          const signInCommand = this.startupServiceSignInCommand(service);
+          const signInCommand = this.startupServiceSignInCommand(service, settings);
           await this.sendStartupTerminalCommand(service, signInCommand);
           await this.markStartupAttempt(signInAttemptKey);
           await this.postStatus(`Startup sign-in command sent for ${service}.`, "warn");
@@ -2873,8 +2992,12 @@ export class CommandCenterController implements vscode.Disposable {
       const message = error instanceof Error ? error.message : String(error);
       this.logWarn(`startup cli bootstrap failed: ${message}`);
       await this.postStatus(`Startup CLI bootstrap failed: ${message}`, "warn");
+      bootstrapNeedsRetry = true;
     } finally {
       this.startupCliBootstrapInFlight = false;
+      if (bootstrapNeedsRetry && !this.startupCliBootstrapDone && !this.disposed) {
+        this.scheduleStartupCliBootstrap();
+      }
     }
   }
 

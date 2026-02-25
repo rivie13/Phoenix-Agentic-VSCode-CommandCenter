@@ -43,7 +43,8 @@
     "onCommand:phoenixOps.openSessionInEditor",
     "onCommand:phoenixOps.jarvisActivate",
     "onCommand:phoenixOps.jarvisAuditionPersonalities",
-    "onCommand:phoenixOps.jarvisToggleManualMode"
+    "onCommand:phoenixOps.jarvisToggleManualMode",
+    "onCommand:phoenixOps.openSettings"
   ],
   "main": "./out/extension.js",
   "icon": "media/phoenix-app-icon-mono.png",
@@ -184,6 +185,11 @@
       {
         "command": "phoenixOps.jarvisToggleManualMode",
         "title": "Phoenix Ops: Toggle Jarvis Manual Mode"
+      },
+      {
+        "command": "phoenixOps.openSettings",
+        "title": "Phoenix Ops: Open Settings",
+        "icon": "$(gear)"
       }
     ],
     "keybindings": [
@@ -346,12 +352,12 @@
         },
         "phoenixOps.codexCliPath": {
           "type": "string",
-          "default": "codex",
+          "default": "npx -y @openai/codex",
           "description": "Path or command name used by supervisor for Codex CLI launches."
         },
         "phoenixOps.copilotCliPath": {
           "type": "string",
-          "default": "copilot",
+          "default": "npx -y @github/copilot",
           "description": "Path or command name used by supervisor for Copilot CLI launches."
         },
         "phoenixOps.claudeCliPath": {

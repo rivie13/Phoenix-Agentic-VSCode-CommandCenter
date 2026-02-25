@@ -39,7 +39,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("phoenixOps.openSessionInEditor", async () => controller.openSessionInEditorCommand()),
     vscode.commands.registerCommand("phoenixOps.jarvisActivate", async () => controller.jarvisActivateCommand()),
     vscode.commands.registerCommand("phoenixOps.jarvisAuditionPersonalities", async () => controller.jarvisAuditionPersonalitiesCommand()),
-    vscode.commands.registerCommand("phoenixOps.jarvisToggleManualMode", async () => controller.jarvisToggleManualModeCommand())
+    vscode.commands.registerCommand("phoenixOps.jarvisToggleManualMode", async () => controller.jarvisToggleManualModeCommand()),
+    vscode.commands.registerCommand("phoenixOps.openSettings", async () => controller.openSettingsCommand())
   );
 
   void controller.initialize().catch((error) => {

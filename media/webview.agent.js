@@ -74,6 +74,14 @@ function selectedSession() {
 
 const terminalInstances = new Map();
 const MAX_TERMINAL_BUFFER_CHARS = 240000;
+const TERMINAL_VISUAL_REFRESH_INTERVAL_MS = 900;
+const terminalWriteQueues = new Map();
+const terminalWriteRafHandles = new Map();
+const terminalMetaUpdateRafHandles = new Map();
+const terminalFitRafHandles = new Map();
+const terminalReportedSizes = new Map();
+let previousTerminalSectionOpen = true;
+let lastTerminalVisualRefreshAt = 0;
 
 function resolveTerminalConstructor() {
   if (typeof window.Terminal === "function") {
@@ -162,10 +170,49 @@ function applyTerminalVisualOptions(terminal) {
   terminal.options.lineHeight = resolveTerminalLineHeight();
   terminal.options.fontWeight = resolveTerminalFontWeight();
   terminal.options.fontWeightBold = "700";
+  terminal.options.cursorStyle = "block";
+  terminal.options.cursorInactiveStyle = "outline";
+  terminal.options.minimumContrastRatio = 4.5;
+}
+
+function postTerminalSizeIfNeeded(sessionId, cols, rows) {
+  if (!sessionId || state.terminal?.attachedSessionId !== sessionId) {
+    return;
+  }
+  const normalizedCols = Number.isFinite(cols) ? Math.max(20, Math.floor(cols)) : null;
+  const normalizedRows = Number.isFinite(rows) ? Math.max(8, Math.floor(rows)) : null;
+  if (normalizedCols === null || normalizedRows === null) {
+    return;
+  }
+  const previous = terminalReportedSizes.get(sessionId);
+  if (previous && previous.cols === normalizedCols && previous.rows === normalizedRows) {
+    return;
+  }
+  terminalReportedSizes.set(sessionId, { cols: normalizedCols, rows: normalizedRows });
+  vscode.postMessage({
+    type: "agentTerminalInput",
+    sessionId,
+    data: "",
+    cols: normalizedCols,
+    rows: normalizedRows
+  });
+}
+
+function syncTerminalSizeFromInstance(sessionId, instance) {
+  if (!sessionId || !instance?.terminal) {
+    return;
+  }
+  postTerminalSizeIfNeeded(sessionId, instance.terminal.cols, instance.terminal.rows);
 }
 
 function fitTerminalInstance(instance) {
   if (!instance?.wrapper || !instance?.terminal) {
+    return;
+  }
+
+  // Skip fit when the wrapper is not laid out (hidden via display:none).
+  // The fit will happen again via requestAnimationFrame once the wrapper is shown.
+  if (instance.wrapper.style.display === "none") {
     return;
   }
 
@@ -189,6 +236,73 @@ function fitTerminalInstance(instance) {
   } catch {
     // No-op
   }
+}
+
+function scheduleTerminalFit(sessionId, instance) {
+  if (!sessionId || !instance?.terminal || !instance?.wrapper) {
+    return;
+  }
+  if (terminalFitRafHandles.has(sessionId)) {
+    return;
+  }
+  const handle = requestAnimationFrame(() => {
+    terminalFitRafHandles.delete(sessionId);
+    fitTerminalInstance(instance);
+    syncTerminalSizeFromInstance(sessionId, instance);
+  });
+  terminalFitRafHandles.set(sessionId, handle);
+}
+
+function enqueueTerminalWrite(sessionId, chunk) {
+  if (!sessionId || typeof chunk !== "string" || chunk.length === 0) {
+    return;
+  }
+
+  const queue = terminalWriteQueues.get(sessionId) || [];
+  queue.push(chunk);
+  terminalWriteQueues.set(sessionId, queue);
+
+  if (terminalWriteRafHandles.has(sessionId)) {
+    return;
+  }
+
+  const handle = requestAnimationFrame(() => {
+    terminalWriteRafHandles.delete(sessionId);
+    const pending = terminalWriteQueues.get(sessionId) || [];
+    if (!pending.length) {
+      terminalWriteQueues.delete(sessionId);
+      return;
+    }
+    terminalWriteQueues.delete(sessionId);
+    const instance = terminalInstances.get(sessionId);
+    if (instance?.terminal) {
+      instance.terminal.write(pending.join(""));
+    }
+  });
+
+  terminalWriteRafHandles.set(sessionId, handle);
+}
+
+function scheduleTerminalMetaRefresh(sessionId) {
+  if (!sessionId || state.terminal?.attachedSessionId !== sessionId) {
+    return;
+  }
+  if (terminalMetaUpdateRafHandles.has(sessionId)) {
+    return;
+  }
+
+  const handle = requestAnimationFrame(() => {
+    terminalMetaUpdateRafHandles.delete(sessionId);
+    if (state.terminal?.attachedSessionId !== sessionId) {
+      return;
+    }
+    const meta = byId("agentTerminalMeta");
+    if (meta) {
+      meta.textContent = terminalStatusText(sessionId);
+    }
+  });
+
+  terminalMetaUpdateRafHandles.set(sessionId, handle);
 }
 
 function readTerminalBuffer(sessionId) {
@@ -216,8 +330,20 @@ function appendTerminalBuffer(sessionId, chunk) {
   if (!sessionId || typeof chunk !== "string" || chunk.length === 0) {
     return;
   }
+
+  if (!state.terminal || typeof state.terminal !== "object") {
+    state.terminal = { buffers: {}, states: {}, attachedSessionId: null };
+  }
+
+  if (chunk.length >= MAX_TERMINAL_BUFFER_CHARS) {
+    state.terminal.buffers[sessionId] = chunk.slice(chunk.length - MAX_TERMINAL_BUFFER_CHARS);
+    return;
+  }
+
   const current = readTerminalBuffer(sessionId);
-  writeTerminalBuffer(sessionId, current + chunk);
+  const keep = Math.max(0, MAX_TERMINAL_BUFFER_CHARS - chunk.length);
+  const prefix = keep > 0 ? current.slice(-keep) : "";
+  state.terminal.buffers[sessionId] = prefix + chunk;
 }
 
 function terminalStatusText(sessionId) {
@@ -255,7 +381,10 @@ function ensureTerminalInstance(sessionId, mount) {
       inputSubscription: null,
       fitAddon: null,
       resizeObserver: null,
-      focusListener: null
+      focusListener: null,
+      terminalFocusSubscription: null,
+      terminalBlurSubscription: null,
+      resizeSubscription: null
     };
     terminalInstances.set(sessionId, fallback);
     return fallback;
@@ -266,6 +395,8 @@ function ensureTerminalInstance(sessionId, mount) {
 
   const terminal = new TerminalCtor({
     cursorBlink: true,
+    cursorStyle: "block",
+    cursorInactiveStyle: "outline",
     convertEol: false,
     scrollback: 6000,
     fontSize: resolveTerminalFontSize(),
@@ -275,7 +406,7 @@ function ensureTerminalInstance(sessionId, mount) {
     fontWeightBold: "700",
     letterSpacing: 0,
     allowTransparency: true,
-    minimumContrastRatio: 1,
+    minimumContrastRatio: 4.5,
     theme: resolveTerminalTheme()
   });
 
@@ -287,7 +418,12 @@ function ensureTerminalInstance(sessionId, mount) {
     }
   }
 
+  // Temporarily reveal the wrapper so xterm.js can measure container dimensions
+  // during open(). Opening while display:none yields a 0×0 canvas which breaks
+  // keyboard event capture and prevents proper initial sizing.
+  wrapper.style.display = "block";
   terminal.open(wrapper);
+  wrapper.style.display = "none";
   const focusListener = () => {
     state.terminal.attachedSessionId = sessionId;
     terminal.focus();
@@ -306,10 +442,33 @@ function ensureTerminalInstance(sessionId, mount) {
     });
   });
 
+  // Sync PTY dimensions to the server whenever xterm.js is resized (via fit or manual resize).
+  // Without this the PTY on the server retains its original size, causing output wrapping mismatches.
+  const resizeSubscription = typeof terminal.onResize === "function"
+    ? terminal.onResize(({ cols, rows }) => {
+        postTerminalSizeIfNeeded(sessionId, cols, rows);
+      })
+    : null;
+
+  const terminalFocusSubscription = typeof terminal.onFocus === "function"
+    ? terminal.onFocus(() => {
+        wrapper.classList.add("agent-terminal-shell--active");
+      })
+    : null;
+
+  const terminalBlurSubscription = typeof terminal.onBlur === "function"
+    ? terminal.onBlur(() => {
+        wrapper.classList.remove("agent-terminal-shell--active");
+      })
+    : null;
+
   const instance = {
     terminal,
     wrapper,
     inputSubscription,
+    resizeSubscription,
+    terminalFocusSubscription,
+    terminalBlurSubscription,
     fitAddon,
     resizeObserver: null,
     focusListener
@@ -318,14 +477,14 @@ function ensureTerminalInstance(sessionId, mount) {
   if (typeof ResizeObserver === "function") {
     const resizeObserver = new ResizeObserver(() => {
       if (state.terminal.attachedSessionId === sessionId) {
-        fitTerminalInstance(instance);
+        scheduleTerminalFit(sessionId, instance);
       }
     });
     resizeObserver.observe(wrapper);
     instance.resizeObserver = resizeObserver;
   }
 
-  fitTerminalInstance(instance);
+  scheduleTerminalFit(sessionId, instance);
   terminalInstances.set(sessionId, instance);
   return instance;
 }
@@ -336,12 +495,47 @@ function cleanupTerminalInstances(activeSessionIds) {
       return;
     }
 
+    const writeHandle = terminalWriteRafHandles.get(sessionId);
+    if (typeof writeHandle === "number") {
+      cancelAnimationFrame(writeHandle);
+    }
+    terminalWriteRafHandles.delete(sessionId);
+    terminalWriteQueues.delete(sessionId);
+    terminalReportedSizes.delete(sessionId);
+
+    const metaHandle = terminalMetaUpdateRafHandles.get(sessionId);
+    if (typeof metaHandle === "number") {
+      cancelAnimationFrame(metaHandle);
+    }
+    terminalMetaUpdateRafHandles.delete(sessionId);
+
+    const fitHandle = terminalFitRafHandles.get(sessionId);
+    if (typeof fitHandle === "number") {
+      cancelAnimationFrame(fitHandle);
+    }
+    terminalFitRafHandles.delete(sessionId);
+
     const instance = terminalInstances.get(sessionId);
     if (!instance) {
       return;
     }
     try {
       instance.inputSubscription?.dispose?.();
+    } catch {
+      // No-op
+    }
+    try {
+      instance.resizeSubscription?.dispose?.();
+    } catch {
+      // No-op
+    }
+    try {
+      instance.terminalFocusSubscription?.dispose?.();
+    } catch {
+      // No-op
+    }
+    try {
+      instance.terminalBlurSubscription?.dispose?.();
     } catch {
       // No-op
     }
@@ -394,6 +588,10 @@ function renderTerminalPanel() {
   if (section instanceof HTMLDetailsElement) {
     section.open = state.ui.terminalSectionOpen;
   }
+  const sectionIsOpen = !(section instanceof HTMLDetailsElement) || section.open;
+  const sectionReopened = sectionIsOpen && previousTerminalSectionOpen !== sectionIsOpen;
+  previousTerminalSectionOpen = sectionIsOpen;
+
   if (!mount || !meta) {
     return;
   }
@@ -414,6 +612,14 @@ function renderTerminalPanel() {
     return;
   }
 
+  // Remove any stale empty-state nodes (e.g. "No interactive sessions available.")
+  // left from a previous render cycle when there were no active sessions.
+  Array.from(mount.childNodes).forEach((node) => {
+    if (!(node instanceof HTMLElement) || !node.classList.contains("agent-terminal-shell")) {
+      mount.removeChild(node);
+    }
+  });
+
   const previousAttachedSessionId = state.terminal.attachedSessionId;
   const instance = ensureTerminalInstance(sessionId, mount);
   for (const [candidateSessionId, candidate] of terminalInstances.entries()) {
@@ -424,18 +630,27 @@ function renderTerminalPanel() {
   }
 
   if (instance?.terminal) {
-    applyTerminalVisualOptions(instance.terminal);
-    requestAnimationFrame(() => {
-      fitTerminalInstance(instance);
-    });
+    const now = Date.now();
+    const shouldRefreshVisuals =
+      previousAttachedSessionId !== sessionId
+      || (now - lastTerminalVisualRefreshAt) >= TERMINAL_VISUAL_REFRESH_INTERVAL_MS;
+
+    if (shouldRefreshVisuals) {
+      applyTerminalVisualOptions(instance.terminal);
+      lastTerminalVisualRefreshAt = now;
+    }
+
+    if (previousAttachedSessionId !== sessionId || sectionReopened) {
+      scheduleTerminalFit(sessionId, instance);
+    }
   }
 
   state.terminal.attachedSessionId = sessionId;
+  syncTerminalSizeFromInstance(sessionId, instance);
   meta.textContent = terminalStatusText(sessionId);
   const shouldAutoFocusTerminal =
     previousAttachedSessionId !== sessionId
-    && section instanceof HTMLDetailsElement
-    && section.open
+    && sectionIsOpen
     && !isTextEntryElement(document.activeElement);
 
   if (shouldAutoFocusTerminal && instance?.terminal?.focus) {
@@ -451,17 +666,8 @@ function handleTerminalChunkPayload(payload) {
   }
 
   appendTerminalBuffer(sessionId, data);
-  const instance = terminalInstances.get(sessionId);
-  if (instance?.terminal) {
-    instance.terminal.write(data);
-  }
-
-  if (state.terminal.attachedSessionId === sessionId) {
-    const meta = byId("agentTerminalMeta");
-    if (meta) {
-      meta.textContent = terminalStatusText(sessionId);
-    }
-  }
+  enqueueTerminalWrite(sessionId, data);
+  scheduleTerminalMetaRefresh(sessionId);
 }
 
 function handleTerminalStatePayload(payload) {
@@ -471,12 +677,7 @@ function handleTerminalStatePayload(payload) {
   }
   const nextState = typeof payload?.state === "string" ? payload.state : "connected";
   state.terminal.states[sessionId] = nextState;
-  if (state.terminal.attachedSessionId === sessionId) {
-    const meta = byId("agentTerminalMeta");
-    if (meta) {
-      meta.textContent = terminalStatusText(sessionId);
-    }
-  }
+  scheduleTerminalMetaRefresh(sessionId);
 }
 
 function syncSelectedSessionFromSnapshot() {
@@ -778,6 +979,75 @@ function formatSessionStats(stats) {
   return `${continuesLabel} ${stats.continues} | ${chatsLabel} ${stats.chatMessages} | ${contextLine}${modelLine}`;
 }
 
+function resolveSessionServiceKey(session) {
+  const explicitService = String(session?.service || "").trim().toLowerCase();
+  if (explicitService === "codex" || explicitService === "copilot" || explicitService === "gemini") {
+    return explicitService;
+  }
+
+  const agentId = String(session?.agentId || "").trim().toLowerCase();
+  if (agentId.includes("copilot")) {
+    return "copilot";
+  }
+  if (agentId.includes("gemini")) {
+    return "gemini";
+  }
+  return "codex";
+}
+
+function resolveSessionRateLimitText(session) {
+  const serviceKey = resolveSessionServiceKey(session);
+  const serviceLabel = serviceKey.charAt(0).toUpperCase() + serviceKey.slice(1);
+  const authState = normalizeCliAuthClientState(state.auth?.[serviceKey], serviceKey);
+
+  if (authState.state === "limited") {
+    const detail = authState.detail ? ` (${authState.detail})` : "";
+    return `${serviceLabel}: limited${detail}`;
+  }
+  if (authState.state === "signed-in") {
+    return `${serviceLabel}: ok`;
+  }
+  if (authState.state === "checking") {
+    return `${serviceLabel}: checking`;
+  }
+  if (authState.state === "unavailable") {
+    return `${serviceLabel}: unavailable`;
+  }
+  if (authState.state === "signed-out") {
+    return `${serviceLabel}: signed out`;
+  }
+  return `${serviceLabel}: unknown`;
+}
+
+function buildSessionHoverTitle(session) {
+  const stats = computeSessionStats(session);
+  const contextLine = stats?.contextWindow
+    ? `Context: ${stats.contextTokens.toLocaleString()}/${stats.contextWindow.toLocaleString()} (${stats.contextPercent}%)`
+    : `Context: ${(stats?.contextTokens ?? 0).toLocaleString()} tokens`;
+  const modelLine = stats?.modelName
+    ? `Model: ${stats.modelName}`
+    : `Model: ${String(session?.model || "unknown")}`;
+  const repoLine = `Repo: ${session?.repository || "(none)"} | Branch: ${session?.branch || "(none)"}`;
+  const workspaceLabel = session?.workspace ? session.workspace.replace(/.*[\\/]/, "") : "(none)";
+  const workspaceLine = `Workspace: ${workspaceLabel}`;
+  const activityLine = `Updated: ${formatTime(session?.updatedAt)} | Heartbeat: ${formatAge(session?.lastHeartbeat)}`;
+  const usageLine = stats
+    ? `${stats.continuesSource === "exact" ? "Continues" : "Continues~"}: ${stats.continues} | ${stats.chatsSource === "exact" ? "Chats" : "Chats~"}: ${stats.chatMessages}`
+    : "Continues: 0 | Chats: 0";
+  const rateLimitLine = `Rate limit: ${resolveSessionRateLimitText(session)}`;
+
+  return [
+    `${session?.agentId || "Agent"} (${session?.status || "unknown"})`,
+    modelLine,
+    contextLine,
+    usageLine,
+    rateLimitLine,
+    repoLine,
+    workspaceLine,
+    activityLine
+  ].join("\n");
+}
+
 function sessionIsRunning(session) {
   if (!session) {
     return false;
@@ -834,6 +1104,7 @@ function createSessionCard(session) {
 
   const row = document.createElement("div");
   row.className = `session-row session-row--${cls}`;
+  row.title = buildSessionHoverTitle(session);
   if (state.selected?.kind === "session" && state.selected.id === session.sessionId) row.classList.add("selected");
   if (session.pinned) row.classList.add("session-row--pinned");
 
@@ -1001,50 +1272,13 @@ function textLine(text, className = "meta-line") {
   return div;
 }
 
-function renderFeed() {
-  const root = byId("agentFeed");
-  root.innerHTML = "";
-  const entries = [...(state.snapshot?.agents?.feed || [])]
-    .filter((entry) => !isJarvisFeedEntry(entry))
-    .sort((a, b) => (parseMs(b.occurredAt) || 0) - (parseMs(a.occurredAt) || 0));
-  const selected = selectedSession();
-  const stats = computeSessionStats(selected);
-  const statsLine = document.createElement("div");
-  statsLine.className = "feed-inline";
-  statsLine.textContent = selected
-    ? `Session stats: ${formatSessionStats(stats)}`
-    : "Select a session to view per-session chat/context stats.";
-  root.appendChild(statsLine);
-  const visible = selected ? entries.filter((entry) => entry.sessionId === selected.sessionId) : entries;
-  if (!visible.length) {
-    root.appendChild(emptyText(selected ? "No feed for selected session." : "No feed entries."));
-    return;
-  }
-  visible.slice(0, 80).forEach((entry) => {
-    const row = document.createElement("div");
-    row.className = `feed-row ${entry.level || "info"}`;
-    row.appendChild(textLine(`${formatTime(entry.occurredAt)} | ${entry.transport} | ${entry.agentId}`));
-    row.appendChild(textLine(entry.message, "feed-text"));
-    root.appendChild(row);
-  });
-}
-
 function renderJarvisSupervisorSection() {
   const jarvisSection = byId("agentJarvisSection");
   const jarvisMeta = byId("jarvisSectionMeta");
-  const jarvisFeedRoot = byId("jarvisFeed");
 
   if (jarvisSection instanceof HTMLDetailsElement) {
     jarvisSection.open = state.ui.jarvisSectionOpen;
   }
-
-  const dedicatedJarvisFeed = Array.isArray(state.snapshot?.jarvis?.feed)
-    ? state.snapshot.jarvis.feed
-    : [];
-  const fallbackJarvisFeed = (state.snapshot?.agents?.feed || []).filter((entry) => isJarvisFeedEntry(entry));
-  const jarvisFeed = (dedicatedJarvisFeed.length ? dedicatedJarvisFeed : fallbackJarvisFeed)
-    .slice()
-    .sort((a, b) => (parseMs(b.occurredAt) || 0) - (parseMs(a.occurredAt) || 0));
 
   if (jarvisMeta) {
     const mode = !state.jarvis.enabled
@@ -1053,27 +1287,15 @@ function renderJarvisSupervisorSection() {
     const apiHealth = state.jarvis.chatDegraded || state.jarvis.speechDegraded
       ? "API degraded"
       : "API healthy";
-    jarvisMeta.textContent = `Mode: ${mode} | ${apiHealth} | Feed ${jarvisFeed.length}`;
+    const reason = state.jarvis.lastReason ? `Reason: ${state.jarvis.lastReason}` : "";
+    const focus = state.jarvis.focusLabel ? `Focus: ${state.jarvis.focusLabel}` : "";
+    jarvisMeta.textContent = [
+      `Mode: ${mode}`,
+      apiHealth,
+      reason,
+      focus
+    ].filter((part) => part.length > 0).join(" | ");
   }
-
-  if (!jarvisFeedRoot) {
-    return;
-  }
-
-  jarvisFeedRoot.innerHTML = "";
-  if (!jarvisFeed.length) {
-    jarvisFeedRoot.appendChild(emptyText("No Jarvis supervisor events."));
-    return;
-  }
-
-  jarvisFeed.slice(0, 60).forEach((entry) => {
-    const row = document.createElement("div");
-    row.className = `feed-row ${entry.level || "info"}`;
-    const source = String(entry.agentId || entry.service || "jarvis").trim() || "jarvis";
-    row.appendChild(textLine(`${formatTime(entry.occurredAt)} | ${source}`));
-    row.appendChild(textLine(String(entry.message || ""), "feed-text"));
-    jarvisFeedRoot.appendChild(row);
-  });
 }
 
 function renderDetail() {

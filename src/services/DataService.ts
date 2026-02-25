@@ -226,8 +226,8 @@ export class DataService {
     const embeddedSupervisorHost = config.get<string>("embeddedSupervisorHost", "127.0.0.1").trim() || "127.0.0.1";
     const embeddedSupervisorPort = Math.max(1, Math.min(65535, config.get<number>("embeddedSupervisorPort", 8789)));
     const embeddedSupervisorApiToken = config.get<string>("embeddedSupervisorApiToken", "").trim();
-    const codexCliPath = stripWrappingQuotes(config.get<string>("codexCliPath", "codex").trim()) || "codex";
-    const copilotCliPath = stripWrappingQuotes(config.get<string>("copilotCliPath", "copilot").trim()) || "copilot";
+    const codexCliPath = stripWrappingQuotes(config.get<string>("codexCliPath", "npx -y @openai/codex").trim()) || "npx -y @openai/codex";
+    const copilotCliPath = stripWrappingQuotes(config.get<string>("copilotCliPath", "npx -y @github/copilot").trim()) || "npx -y @github/copilot";
     const claudeCliPath = stripWrappingQuotes(config.get<string>("claudeCliPath", "claude").trim()) || "claude";
     const geminiCliPath = stripWrappingQuotes(config.get<string>("geminiCliPath", "npx -y @google/gemini-cli").trim()) || "npx -y @google/gemini-cli";
     const geminiCliAuthCommand = stripWrappingQuotes(config.get<string>("geminiCliAuthCommand", "auto").trim()) || "auto";

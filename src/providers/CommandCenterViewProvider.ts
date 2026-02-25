@@ -124,28 +124,13 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
       <span id="jarvisStatus">Jarvis: initializing</span>
       <span id="jarvisFocus" class="meta-line"></span>
     </div>
-    <details id="opsSettingsSection" class="topbar-settings foldout">
-      <summary class="foldout-summary topbar-settings-summary">
-        <span class="lane-title">Ops Settings and Tools</span>
-        <span class="meta-line">Sign-in, supervisor, and model controls</span>
-      </summary>
-      <div class="foldout-body topbar-settings-body">
-        <div class="topbar-actions">
-          <button id="signInButton">Sign In</button>
-          <button id="signInCodexButton">Codex CLI</button>
-          <button id="signInCopilotButton">Copilot CLI</button>
-          <button id="signInGeminiCliButton">Gemini CLI</button>
-          <button id="geminiSignInButton">Gemini Key Portal</button>
-          <button id="geminiApiKeyButton">Set Gemini Key</button>
-          <button id="pollinationsSignInButton">Pollinations Sign In</button>
-          <button id="pollinationsApiKeyButton">Set Pollinations Key</button>
-          <button id="configureSupervisorButton">Supervisor Mode</button>
-          <button id="configureModelHubButton">Model Hub</button>
-          <button id="openAgentWorkspacePanelButton">Open Right Agent Panel</button>
-          <button id="refreshButton">Refresh</button>
-        </div>
-      </div>
-    </details>
+    <div class="topbar-quickbar">
+      <button id="configureSupervisorButton" class="quickbar-btn" title="Configure Supervisor Mode">Supervisor</button>
+      <button id="configureModelHubButton" class="quickbar-btn" title="Configure Agent Model Hub">Model Hub</button>
+      <button id="openAgentWorkspacePanelButton" class="quickbar-btn" title="Open Right Agent Panel">Agent Panel</button>
+      <button id="refreshButton" class="quickbar-icon-btn" title="Refresh">&#8635;</button>
+      <button id="openSettingsButton" class="quickbar-icon-btn" title="Open Extension Settings">&#9881;</button>
+    </div>
   </div>
 
   <details id="workspaceControlsSection" class="panel foldout controls-foldout" open>
@@ -206,8 +191,8 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
       <section class="panel workspace-tabs-panel">
         <div class="workspace-tabs-header">
           <div class="inline-actions">
-            <button id="collapseAllLeftSections">Collapse Sections</button>
-            <button id="expandAllLeftSections">Expand Sections</button>
+            <button id="collapseAllLeftSections" class="sessions-text-btn">Collapse Sections</button>
+            <button id="expandAllLeftSections" class="sessions-text-btn">Expand Sections</button>
           </div>
         </div>
         <div class="workspace-tabs" role="tablist" aria-label="Command Center Sections">
@@ -221,9 +206,9 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
       <section id="boardSection" class="panel board-panel tab-panel active-tab" data-tab-panel="board">
         <div class="board-toolbar">
           <div class="lane-title">Ops Center</div>
-          <div class="inline-actions">
-            <button id="collapseAllLanes">Collapse All</button>
-            <button id="expandAllLanes">Expand All</button>
+          <div class="ops-toolbar">
+            <button id="collapseAllLanes" class="ops-text-btn">Collapse All</button>
+            <button id="expandAllLanes" class="ops-text-btn">Expand All</button>
           </div>
           <div id="boardCounts" class="meta-line"></div>
         </div>
@@ -237,8 +222,8 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
         <section class="panel nested-panel">
           <div class="board-toolbar">
             <h3>Pull Request Overview</h3>
-            <div class="inline-actions">
-              <button id="openPullRequestsTabFromOps" class="lane-action" type="button">Open PR Tab</button>
+            <div class="ops-toolbar">
+              <button id="openPullRequestsTabFromOps" class="ops-text-btn ops-text-btn--primary" type="button">Open PR Tab</button>
             </div>
           </div>
           <div id="opsPullRequestCounts" class="meta-line"></div>
@@ -251,8 +236,8 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
         <section class="panel nested-panel">
           <div class="board-toolbar">
             <h3>Actions Overview</h3>
-            <div class="inline-actions">
-              <button id="openActionsTabFromOps" class="lane-action" type="button">Open Actions Tab</button>
+            <div class="ops-toolbar">
+              <button id="openActionsTabFromOps" class="ops-text-btn ops-text-btn--primary" type="button">Open Actions Tab</button>
             </div>
           </div>
           <div id="opsActionCounts" class="meta-line"></div>
@@ -271,10 +256,10 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
         </summary>
         <div class="foldout-body">
           <div class="board-toolbar">
-            <div class="inline-actions">
-              <button id="createIssueInIssuesButton">Create Issue</button>
-              <button id="updateFieldInIssuesButton">Update Field</button>
-              <button id="updateLabelsInIssuesButton">Update Labels</button>
+            <div class="ops-toolbar">
+              <button id="createIssueInIssuesButton" class="ops-text-btn ops-text-btn--primary">Create Issue</button>
+              <button id="updateFieldInIssuesButton" class="ops-text-btn">Update Field</button>
+              <button id="updateLabelsInIssuesButton" class="ops-text-btn">Update Labels</button>
             </div>
             <div id="issueWorkbenchCounts" class="meta-line"></div>
           </div>
@@ -437,11 +422,11 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
         </summary>
         <div class="foldout-body">
           <div class="board-toolbar">
-            <div class="inline-actions">
-              <button id="createPullRequestInPullRequestsButton">Create PR</button>
-              <button id="refreshPullRequestsButton">Refresh PRs</button>
-              <button id="collapseAllPullRequests">Collapse All</button>
-              <button id="expandAllPullRequests">Expand All</button>
+            <div class="ops-toolbar">
+              <button id="createPullRequestInPullRequestsButton" class="ops-text-btn ops-text-btn--primary">Create PR</button>
+              <button id="refreshPullRequestsButton" class="ops-text-btn">Refresh PRs</button>
+              <button id="collapseAllPullRequests" class="ops-text-btn">Collapse All</button>
+              <button id="expandAllPullRequests" class="ops-text-btn">Expand All</button>
             </div>
             <div id="pullRequestCounts" class="meta-line"></div>
           </div>
@@ -504,7 +489,7 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
         </summary>
         <div class="foldout-body">
           <div class="board-toolbar">
-            <div class="inline-actions">
+            <div class="ops-toolbar">
               <label class="toggle-label" for="actionsStackMode">Stack</label>
               <select id="actionsStackMode" class="actions-select">
                 <option value="workflow-branch-repo">Repo + Branch + Workflow</option>
@@ -512,8 +497,8 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
                 <option value="repo">Repo</option>
                 <option value="none">No stacking</option>
               </select>
-              <button id="collapseAllActions">Collapse All</button>
-              <button id="expandAllActions">Expand All</button>
+              <button id="collapseAllActions" class="ops-text-btn">Collapse All</button>
+              <button id="expandAllActions" class="ops-text-btn">Expand All</button>
             </div>
             <div id="actionsCounts" class="meta-line"></div>
           </div>
@@ -532,7 +517,7 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
     <div id="rightAgentPane" class="agent-pane">
       <details id="agentSessionsSection" class="panel foldout sessions-foldout" open>
         <summary class="foldout-summary">
-          <span class="lane-title">Sessions and Feed</span>
+          <span class="lane-title">Sessions</span>
           <span id="sessionCounts" class="meta-line"></span>
         </summary>
         <div class="foldout-body">
@@ -543,10 +528,6 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
             <label class="toggle-label"><input id="showOlderSessions" type="checkbox" /> Show older than 24h</label>
           </div>
           <div id="agentSessions" class="agent-sessions"></div>
-          <section class="panel nested-panel" style="margin-top: 10px;">
-            <h3>Agent Feed</h3>
-            <div id="agentFeed" class="agent-feed"></div>
-          </section>
         </div>
       </details>
       <details id="agentJarvisSection" class="panel foldout jarvis-foldout" open>
@@ -563,10 +544,6 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
             <button id="jarvisModeButtonHub" class="lane-action" type="button">Jarvis Auto: On</button>
             <button id="jarvisWakeButtonHub" class="lane-action" type="button">Wake Word: Off</button>
           </div>
-          <section class="panel nested-panel">
-            <h3>Jarvis Feed</h3>
-            <div id="jarvisFeed" class="agent-feed"></div>
-          </section>
         </div>
       </details>
       <details id="agentTerminalSection" class="panel foldout terminal-foldout" open>
