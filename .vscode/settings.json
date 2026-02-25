@@ -1,10 +1,14 @@
 {
+  "phoenixOps.supervisorBaseUrl": "http://127.0.0.1:8787",
+  "phoenixOps.workspaceSupervisorAutoStart": true,
+  "phoenixOps.workspaceSupervisorRepoPath": "../Phoenix-Agentic-Workspace-Supervisor",
   "phoenixOps.workspaceSupervisorRunBootstrapOnAutoStart": true,
+  "phoenixOps.embeddedSupervisorEnabled": false,
   "phoenixOps.openAgentWorkspaceOnStartup": true,
   "phoenixOps.cliBootstrapOnStartup": true,
   "phoenixOps.cliStartupSpawnPtyTerminals": true,
-  "phoenixOps.cliStartupAutoInstallMissing": true,
-  "phoenixOps.cliStartupAutoSignIn": true,
+  "phoenixOps.cliStartupAutoInstallMissing": false,
+  "phoenixOps.cliStartupAutoSignIn": false,
   "phoenixOps.jarvisStartupGreetingOnStartup": true,
   "mcp.servers": {
     "phoenix-qa-handoff": {

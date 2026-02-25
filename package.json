@@ -22,6 +22,7 @@
     "onCommand:phoenixOps.signIn",
     "onCommand:phoenixOps.signInCodexCli",
     "onCommand:phoenixOps.signInCopilotCli",
+    "onCommand:phoenixOps.signInGeminiCli",
     "onCommand:phoenixOps.geminiSignIn",
     "onCommand:phoenixOps.geminiSetApiKey",
     "onCommand:phoenixOps.pollinationsSignIn",
@@ -42,7 +43,8 @@
     "onCommand:phoenixOps.openSessionInEditor",
     "onCommand:phoenixOps.jarvisActivate",
     "onCommand:phoenixOps.jarvisAuditionPersonalities",
-    "onCommand:phoenixOps.jarvisToggleManualMode"
+    "onCommand:phoenixOps.jarvisToggleManualMode",
+    "onCommand:phoenixOps.openSettings"
   ],
   "main": "./out/extension.js",
   "icon": "media/phoenix-app-icon-mono.png",
@@ -95,6 +97,10 @@
       {
         "command": "phoenixOps.signInCopilotCli",
         "title": "Phoenix Ops: Sign In to Copilot CLI"
+      },
+      {
+        "command": "phoenixOps.signInGeminiCli",
+        "title": "Phoenix Ops: Sign In to Gemini CLI"
       },
       {
         "command": "phoenixOps.geminiSignIn",
@@ -179,6 +185,11 @@
       {
         "command": "phoenixOps.jarvisToggleManualMode",
         "title": "Phoenix Ops: Toggle Jarvis Manual Mode"
+      },
+      {
+        "command": "phoenixOps.openSettings",
+        "title": "Phoenix Ops: Open Settings",
+        "icon": "$(gear)"
       }
     ],
     "keybindings": [
@@ -334,14 +345,19 @@
           "default": "auto",
           "description": "Terminal command used by 'Phoenix Ops: Sign In to Copilot CLI'. Set to 'auto' to prefer `copilot login` with fallback."
         },
+        "phoenixOps.geminiCliAuthCommand": {
+          "type": "string",
+          "default": "auto",
+          "description": "Terminal command used by 'Phoenix Ops: Sign In to Gemini CLI'. Set to 'auto' to prefer `gemini auth login` with fallback."
+        },
         "phoenixOps.codexCliPath": {
           "type": "string",
-          "default": "codex",
+          "default": "npx -y @openai/codex",
           "description": "Path or command name used by supervisor for Codex CLI launches."
         },
         "phoenixOps.copilotCliPath": {
           "type": "string",
-          "default": "copilot",
+          "default": "npx -y @github/copilot",
           "description": "Path or command name used by supervisor for Copilot CLI launches."
         },
         "phoenixOps.claudeCliPath": {
@@ -351,7 +367,7 @@
         },
         "phoenixOps.geminiCliPath": {
           "type": "string",
-          "default": "gemini",
+          "default": "npx -y @google/gemini-cli",
           "description": "Path or command name used by supervisor for Gemini CLI launches."
         },
         "phoenixOps.cliBootstrapOnStartup": {
@@ -403,6 +419,11 @@
           "type": "string",
           "default": "",
           "description": "Optional default Copilot model used when dispatcher payload omits model."
+        },
+        "phoenixOps.geminiDefaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Optional default Gemini model used when dispatcher payload omits model."
         },
         "phoenixOps.copilotCloudEnabled": {
           "type": "boolean",

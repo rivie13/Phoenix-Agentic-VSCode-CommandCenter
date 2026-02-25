@@ -3,6 +3,7 @@
   --phoenix-fg: var(--vscode-foreground);
   --phoenix-muted: var(--vscode-descriptionForeground);
   --phoenix-bg-base: var(--vscode-editor-background);
+  --phoenix-terminal-min-width: 900px;
   --phoenix-sun: #ffd166;
   --phoenix-coral: #ff8c94;
   --phoenix-mint: #67d7b8;
@@ -135,6 +136,64 @@ body.agent-only .layout {
     var(--phoenix-surface);
 }
 
+/* ── Compact quickbar replacing the old blocky OPS SETTINGS section ── */
+.topbar-quickbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.quickbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.quickbar-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--vscode-input-border) 78%, transparent 22%);
+  background: color-mix(in srgb, var(--phoenix-lilac) 16%, var(--vscode-button-secondaryBackground) 84%);
+  color: var(--vscode-button-secondaryForeground);
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: 22px;
+  line-height: 1;
+  transition: filter 120ms ease;
+}
+
+.quickbar-btn:hover {
+  filter: brightness(1.15);
+}
+
+.quickbar-icon-btn {
+  font-size: 14px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--vscode-input-border) 70%, transparent 30%);
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+  flex-shrink: 0;
+}
+
+.quickbar-icon-btn:hover {
+  color: var(--phoenix-fg);
+  background: color-mix(in srgb, var(--vscode-input-border) 20%, transparent 80%);
+}
+
+/* Legacy — kept for any remaining topbar-actions usage */
 .topbar-actions {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
@@ -566,30 +625,81 @@ button:disabled {
 
 .agent-terminal-mount {
   border: 1px solid color-mix(in srgb, var(--vscode-input-border) 75%, transparent 25%);
-  border-radius: 8px;
+  border-radius: 10px;
   min-height: 260px;
   height: clamp(320px, 52vh, 820px);
   min-width: 0;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
   position: relative;
-  background: color-mix(in srgb, var(--vscode-editor-background) 92%, #101820 8%);
+  padding: 6px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--phoenix-sky) 8%, transparent 92%), transparent),
+    color-mix(in srgb, var(--vscode-terminal-background) 94%, var(--vscode-editor-background) 6%);
 }
 
 .agent-terminal-shell {
-  width: 100%;
+  width: max(100%, var(--phoenix-terminal-min-width));
   height: 100%;
+  min-width: var(--phoenix-terminal-min-width);
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--vscode-input-border) 62%, transparent 38%);
+  background: color-mix(in srgb, var(--vscode-terminal-background) 96%, var(--vscode-editor-background) 4%);
   padding: 0;
-  min-width: 0;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.agent-terminal-shell.agent-terminal-shell--active {
+  border-color: color-mix(in srgb, var(--vscode-focusBorder) 72%, var(--phoenix-sky) 28%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent 30%);
 }
 
 .agent-terminal-shell .xterm {
   width: 100%;
   height: 100%;
-  padding: 8px;
+  padding: 10px 9px;
+  text-rendering: auto;
+  -webkit-font-smoothing: antialiased;
+  font-variant-ligatures: none;
 }
 
 .agent-terminal-shell .xterm-viewport {
+  overflow-x: auto !important;
   overflow-y: auto !important;
+  scrollbar-color: color-mix(in srgb, var(--phoenix-sky) 38%, var(--vscode-input-border) 62%) transparent;
+}
+
+.agent-terminal-shell .xterm-rows {
+  letter-spacing: 0;
+}
+
+.agent-terminal-shell .xterm-screen canvas {
+  image-rendering: auto;
+}
+
+.agent-terminal-shell--fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  text-align: center;
+  color: var(--phoenix-muted);
+  font-size: 12px;
+}
+
+#agentTerminalSection > summary {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+#agentTerminalMeta {
+  flex: 1 1 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  font-family: var(--vscode-editor-font-family, Consolas, "Courier New", monospace);
 }
 
 .chat-composer {
@@ -1049,10 +1159,192 @@ body.agent-only #agentChatSection .chat-timeline {
 }
 
 .agent-sessions {
-  display: grid;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
+/* Compact session bucket */
+.session-bucket {
+  margin-bottom: 2px;
+}
+
+.session-bucket-heading {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 700;
+  color: var(--phoenix-muted);
+  padding: 6px 6px 2px;
+  opacity: 0.7;
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Compact session row */
+.session-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 6px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 80ms ease, border-color 80ms ease;
+}
+
+.session-row:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground, var(--phoenix-surface)) 90%, var(--phoenix-sky) 10%);
+  border-color: color-mix(in srgb, var(--vscode-input-border) 35%, transparent 65%);
+}
+
+.session-row.selected {
+  background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, var(--phoenix-surface-strong)) 75%, var(--phoenix-sky) 25%);
+  border-color: color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent 30%);
+}
+
+.session-row-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.session-status-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--phoenix-muted);
+  opacity: 0.7;
+}
+
+.session-row--active .session-status-dot { background: #6cc644; opacity: 1; }
+.session-row--waiting .session-status-dot { background: #e5b567; opacity: 1; }
+.session-row--attention .session-status-dot { background: #f97583; opacity: 1; }
+.session-row--offline .session-status-dot { background: var(--phoenix-muted); opacity: 0.45; }
+.session-row--archived .session-status-dot { background: var(--phoenix-muted); opacity: 0.3; }
+
+.session-row-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 1 1 0;
+  overflow: hidden;
+}
+
+.session-row-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--phoenix-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-transport-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: color-mix(in srgb, var(--phoenix-sky) 14%, var(--vscode-editor-background) 86%);
+  border: 1px solid color-mix(in srgb, var(--phoenix-sky) 28%, var(--vscode-input-border) 72%);
+  color: var(--phoenix-muted);
+  line-height: 1.3;
+}
+
+.session-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 100ms ease;
+  flex-shrink: 0;
+}
+
+.session-row:hover .session-row-actions,
+.session-row.selected .session-row-actions {
+  opacity: 1;
+}
+
+.session-row-btn {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--phoenix-muted);
+  cursor: pointer;
+  line-height: 1.4;
+  min-height: unset;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+
+.session-row-btn:hover {
+  background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 80%, var(--phoenix-sky) 20%);
+  color: var(--phoenix-fg);
+  border-color: color-mix(in srgb, var(--vscode-input-border) 65%, transparent 35%);
+}
+
+.session-row-btn--primary {
+  background: color-mix(in srgb, var(--phoenix-sky) 16%, var(--vscode-button-secondaryBackground) 84%);
+  color: var(--phoenix-fg);
+  border-color: color-mix(in srgb, var(--phoenix-sky) 32%, var(--vscode-input-border) 68%);
+}
+
+.session-row-meta {
+  font-size: 11px;
+  color: var(--phoenix-muted);
+  padding-left: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.session-row-detail {
+  font-size: 10px;
+  color: var(--phoenix-muted);
+  padding-left: 13px;
+  opacity: 0.65;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
+/* Compact sessions toolbar */
+.sessions-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 0 4px;
+}
+
+.sessions-text-btn {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--vscode-input-border) 60%, transparent 40%);
+  background: transparent;
+  color: var(--phoenix-muted);
+  cursor: pointer;
+  line-height: 1.4;
+  min-height: unset;
+  transition: background 80ms ease, color 80ms ease;
+}
+
+.sessions-text-btn:hover {
+  background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 70%, var(--phoenix-sky) 30%);
+  color: var(--phoenix-fg);
+}
+
+/* Legacy session-card kept for other uses */
 .session-card {
   display: flex;
   flex-direction: column;
@@ -1291,6 +1583,260 @@ body.agent-only #agentTerminalSection .agent-terminal-mount {
 
 body.agent-only .context-picker-panel .inline-actions {
   width: 100%;
+}
+
+/* ── Compact ops-center item rows (mirrors session-row pattern) ── */
+.ops-item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.ops-item-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 6px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 80ms ease, border-color 80ms ease;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--phoenix-fg);
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.ops-item-row:hover {
+  background: color-mix(in srgb, var(--vscode-list-hoverBackground, var(--phoenix-surface)) 90%, var(--phoenix-sky) 10%);
+  border-color: color-mix(in srgb, var(--vscode-input-border) 35%, transparent 65%);
+}
+
+.ops-item-row.selected {
+  background: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, var(--phoenix-surface-strong)) 75%, var(--phoenix-sky) 25%);
+  border-color: color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent 30%);
+}
+
+.ops-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ops-item-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--phoenix-muted);
+  opacity: 0.6;
+}
+
+.ops-item-dot--critical { background: #f97583; opacity: 1; }
+.ops-item-dot--high     { background: #e5b567; opacity: 1; }
+.ops-item-dot--medium   { background: #7fb5ff; opacity: 1; }
+.ops-item-dot--done     { background: #6cc644; opacity: 1; }
+.ops-item-dot--inprogress { background: #6cc644; opacity: 1; }
+.ops-item-dot--blocked  { background: #f97583; opacity: 0.85; }
+.ops-item-dot--review   { background: #e5b567; opacity: 1; }
+.ops-item-dot--queued   { background: #aaaaaa; opacity: 0.7; }
+.ops-item-dot--failure  { background: #f97583; opacity: 1; }
+.ops-item-dot--success  { background: #6cc644; opacity: 1; }
+
+.ops-item-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 1 1 0;
+  overflow: hidden;
+}
+
+.ops-item-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--phoenix-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ops-item-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: color-mix(in srgb, var(--phoenix-sky) 14%, var(--vscode-editor-background) 86%);
+  border: 1px solid color-mix(in srgb, var(--phoenix-sky) 28%, var(--vscode-input-border) 72%);
+  color: var(--phoenix-muted);
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.ops-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 100ms ease;
+  flex-shrink: 0;
+}
+
+.ops-item-row:hover .ops-item-actions,
+.ops-item-row.selected .ops-item-actions {
+  opacity: 1;
+}
+
+.ops-item-btn {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--phoenix-muted);
+  cursor: pointer;
+  line-height: 1.4;
+  min-height: unset;
+  transition: background 80ms ease, color 80ms ease, border-color 80ms ease;
+}
+
+.ops-item-btn:hover {
+  background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 80%, var(--phoenix-sky) 20%);
+  color: var(--phoenix-fg);
+  border-color: color-mix(in srgb, var(--vscode-input-border) 65%, transparent 35%);
+}
+
+.ops-item-btn--primary {
+  background: color-mix(in srgb, var(--phoenix-sky) 16%, var(--vscode-button-secondaryBackground) 84%);
+  color: var(--phoenix-fg);
+  border-color: color-mix(in srgb, var(--phoenix-sky) 32%, var(--vscode-input-border) 68%);
+}
+
+.ops-item-meta {
+  font-size: 11px;
+  color: var(--phoenix-muted);
+  padding-left: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.ops-item-detail {
+  font-size: 10px;
+  color: var(--phoenix-muted);
+  padding-left: 13px;
+  opacity: 0.65;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
+/* Compact ops bucket (replaces .lane in ops panel) */
+.ops-bucket {
+  margin-bottom: 2px;
+}
+
+.ops-bucket-heading {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 700;
+  color: var(--phoenix-muted);
+  padding: 5px 6px 3px;
+  opacity: 0.75;
+}
+
+.ops-bucket-heading-toggle {
+  font-size: 11px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--phoenix-muted);
+  padding: 0;
+  line-height: 1;
+  transition: background 80ms ease, color 80ms ease;
+  flex-shrink: 0;
+}
+
+.ops-bucket-heading-toggle:hover {
+  background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 70%, var(--phoenix-sky) 30%);
+  color: var(--phoenix-fg);
+}
+
+/* Override for ops overview mini grid */
+.ops-overview-grid .ops-bucket {
+  min-height: 80px;
+}
+
+.ops-overview-grid .ops-item-list {
+  max-height: 200px;
+}
+
+/* Compact ops toolbar buttons (replaces heavy lane-action / inline-actions in headers) */
+.ops-text-btn {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--vscode-input-border) 60%, transparent 40%);
+  background: transparent;
+  color: var(--phoenix-muted);
+  cursor: pointer;
+  line-height: 1.4;
+  min-height: unset;
+  transition: background 80ms ease, color 80ms ease;
+}
+
+.ops-text-btn:hover {
+  background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 70%, var(--phoenix-sky) 30%);
+  color: var(--phoenix-fg);
+}
+
+.ops-text-btn--primary {
+  background: color-mix(in srgb, var(--phoenix-sky) 14%, var(--vscode-button-secondaryBackground) 86%);
+  color: var(--phoenix-fg);
+  border-color: color-mix(in srgb, var(--phoenix-sky) 30%, var(--vscode-input-border) 70%);
+}
+
+.ops-text-btn--primary:hover {
+  filter: brightness(1.1);
+}
+
+/* Compact ops toolbar row */
+.ops-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 0 4px;
+}
+
+/* Board lanes in board panel: tighter gaps */
+#boardSection .board-lanes {
+  gap: 4px;
+}
+
+#boardSection .board-lanes .ops-bucket {
+  border: 1px solid color-mix(in srgb, var(--vscode-input-border) 40%, transparent 60%);
+  border-radius: 8px;
+  padding: 4px;
+  background: color-mix(in srgb, var(--phoenix-surface) 94%, var(--phoenix-sky) 6%);
 }
 
 @media (max-width: 1200px) {

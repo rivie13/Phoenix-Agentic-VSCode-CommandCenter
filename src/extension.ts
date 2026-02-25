@@ -19,6 +19,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("phoenixOps.signIn", async () => controller.signInCommand()),
     vscode.commands.registerCommand("phoenixOps.signInCodexCli", async () => controller.signInCodexCliCommand()),
     vscode.commands.registerCommand("phoenixOps.signInCopilotCli", async () => controller.signInCopilotCliCommand()),
+    vscode.commands.registerCommand("phoenixOps.signInGeminiCli", async () => controller.signInGeminiCliCommand()),
     vscode.commands.registerCommand("phoenixOps.geminiSignIn", async () => controller.geminiSignInCommand()),
     vscode.commands.registerCommand("phoenixOps.geminiSetApiKey", async () => controller.geminiSetApiKeyCommand()),
     vscode.commands.registerCommand("phoenixOps.pollinationsSignIn", async () => controller.pollinationsSignInCommand()),
@@ -38,7 +39,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("phoenixOps.openSessionInEditor", async () => controller.openSessionInEditorCommand()),
     vscode.commands.registerCommand("phoenixOps.jarvisActivate", async () => controller.jarvisActivateCommand()),
     vscode.commands.registerCommand("phoenixOps.jarvisAuditionPersonalities", async () => controller.jarvisAuditionPersonalitiesCommand()),
-    vscode.commands.registerCommand("phoenixOps.jarvisToggleManualMode", async () => controller.jarvisToggleManualModeCommand())
+    vscode.commands.registerCommand("phoenixOps.jarvisToggleManualMode", async () => controller.jarvisToggleManualModeCommand()),
+    vscode.commands.registerCommand("phoenixOps.openSettings", async () => controller.openSettingsCommand())
   );
 
   void controller.initialize().catch((error) => {

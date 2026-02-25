@@ -139,133 +139,147 @@ function renderRunEntries(root, runs) {
 function renderRunColumn(targetId, bucketKey, heading, runs) {
   const root = byId(targetId);
   root.innerHTML = "";
-  const lane = document.createElement("section");
-  lane.className = "lane";
   const groups = buildActionGroups(runs, state.actionStackMode);
   const collapsed = Boolean(state.actionBucketCollapse[bucketKey]);
 
-  const header = document.createElement("div");
-  header.className = "lane-header";
-  const left = document.createElement("div");
-  left.className = "lane-title-wrap";
+  const bucket = document.createElement("div");
+  bucket.className = "ops-bucket";
+
+  const headingEl = document.createElement("div");
+  headingEl.className = "ops-bucket-heading";
+
   const toggle = document.createElement("button");
-  toggle.className = "lane-toggle";
+  toggle.className = "ops-bucket-heading-toggle";
   toggle.type = "button";
-  toggle.textContent = collapsed ? ">" : "v";
+  toggle.textContent = collapsed ? "›" : "⌄";
+  toggle.title = collapsed ? "Expand" : "Collapse";
   toggle.onclick = () => {
     state.actionBucketCollapse[bucketKey] = !collapsed;
     renderActions();
   };
-  left.appendChild(toggle);
-  const title = document.createElement("div");
-  title.className = "lane-title";
-  title.textContent = `${heading} (${groups.length})`;
-  left.appendChild(title);
-  header.appendChild(left);
-  lane.appendChild(header);
+  headingEl.appendChild(toggle);
 
-  const bucketMeta = document.createElement("div");
-  bucketMeta.className = "meta-line";
-  bucketMeta.textContent = state.actionStackMode === "none"
-    ? `${runs.length} runs`
-    : `${groups.length} groups | ${runs.length} runs`;
-  lane.appendChild(bucketMeta);
+  const headText = document.createElement("span");
+  headText.textContent = `${heading} (${groups.length})`;
+  headingEl.appendChild(headText);
+  if (groups.length > 0 && !collapsed) {
+    const runCountBadge = document.createElement("span");
+    runCountBadge.className = "ops-item-badge";
+    runCountBadge.style.marginLeft = "4px";
+    runCountBadge.textContent = `${runs.length} runs`;
+    headingEl.appendChild(runCountBadge);
+  }
+  bucket.appendChild(headingEl);
 
   if (!groups.length) {
-    lane.appendChild(emptyText("No runs"));
-    root.appendChild(lane);
+    bucket.appendChild(emptyText("No runs"));
+    root.appendChild(bucket);
     return;
   }
 
   if (collapsed) {
-    lane.appendChild(emptyText("Collapsed"));
-    root.appendChild(lane);
+    root.appendChild(bucket);
     return;
   }
 
-  const cards = document.createElement("div");
-  cards.className = "lane-cards";
+  const list = document.createElement("div");
+  list.className = "ops-item-list";
   groups.slice(0, 30).forEach((group) => {
     const latest = group.latestRun;
     const groupExpandKey = `${bucketKey}:${group.key}`;
     const expanded = Boolean(state.actionGroupExpand[groupExpandKey]);
-    const card = document.createElement("section");
-    card.className = "card action-card";
+
+    const row = document.createElement("div");
+    row.className = "ops-item-row";
     if (state.selected?.kind === "run" && group.runs.some((run) => run.id === state.selected.id)) {
-      card.classList.add("selected");
+      row.classList.add("selected");
     }
-
-    const head = document.createElement("div");
-    head.className = "session-head";
-    const text = document.createElement("div");
-    text.className = "title";
-    text.textContent = `${group.label}${group.runs.length > 1 ? ` (${group.runs.length})` : ""}`;
-    head.appendChild(text);
-
-    const rowActions = document.createElement("div");
-    rowActions.className = "inline-actions";
-    const select = document.createElement("button");
-    select.className = "lane-action";
-    select.type = "button";
-    select.textContent = "Details";
-    select.onclick = () => {
+    row.onclick = (e) => {
+      if (e.target.closest(".ops-item-actions")) return;
       state.selected = { kind: "run", id: latest.id };
       renderActionRunInsight();
     };
-    rowActions.appendChild(select);
+
+    const rowHeader = document.createElement("div");
+    rowHeader.className = "ops-item-header";
+
+    const dot = document.createElement("span");
+    dot.className = `ops-item-dot ${opsDotClassForRunConclusion(latest)}`;
+    rowHeader.appendChild(dot);
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "ops-item-title-wrap";
+    const name = document.createElement("span");
+    name.className = "ops-item-name";
+    name.textContent = `${group.label}${group.runs.length > 1 ? ` (${group.runs.length})` : ""}`;
+    titleWrap.appendChild(name);
+    const badge = document.createElement("span");
+    badge.className = "ops-item-badge";
+    badge.textContent = latest.repo;
+    titleWrap.appendChild(badge);
+    rowHeader.appendChild(titleWrap);
+
+    const actions = document.createElement("div");
+    actions.className = "ops-item-actions";
+
+    const details = document.createElement("button");
+    details.className = "ops-item-btn";
+    details.type = "button";
+    details.textContent = "Details";
+    details.onclick = (e) => {
+      e.stopPropagation();
+      state.selected = { kind: "run", id: latest.id };
+      renderActionRunInsight();
+    };
+    actions.appendChild(details);
+
     const open = document.createElement("button");
-    open.className = "lane-action";
+    open.className = "ops-item-btn ops-item-btn--primary";
     open.type = "button";
     open.textContent = "Open";
-    open.onclick = () => openRun(latest.url);
-    rowActions.appendChild(open);
-    const expand = document.createElement("button");
-    expand.className = "lane-action";
-    expand.type = "button";
-    expand.textContent = expanded ? "Less" : "More";
-    expand.onclick = () => {
+    open.onclick = (e) => { e.stopPropagation(); openRun(latest.url); };
+    actions.appendChild(open);
+
+    const expandBtn = document.createElement("button");
+    expandBtn.className = "ops-item-btn";
+    expandBtn.type = "button";
+    expandBtn.textContent = expanded ? "Less" : "More";
+    expandBtn.onclick = (e) => {
+      e.stopPropagation();
       state.actionGroupExpand[groupExpandKey] = !expanded;
       renderActions();
     };
-    rowActions.appendChild(expand);
-    head.appendChild(rowActions);
-    card.appendChild(head);
+    actions.appendChild(expandBtn);
+    rowHeader.appendChild(actions);
+    row.appendChild(rowHeader);
 
     const meta = document.createElement("div");
-    meta.className = "meta-line";
-    meta.textContent = `${latest.repo} | ${latest.status}${latest.conclusion ? `/${latest.conclusion}` : ""} | ${formatAge(latest.updatedAt)}`;
-    card.appendChild(meta);
+    meta.className = "ops-item-meta";
+    meta.textContent = `${latest.status}${latest.conclusion ? `/${latest.conclusion}` : ""} · ${formatAge(latest.updatedAt)}`;
+    row.appendChild(meta);
 
-    if (!expanded) {
+    if (expanded) {
+      const detail = document.createElement("div");
+      detail.className = "ops-item-detail";
+      detail.textContent = `${latest.headBranch || "(no branch)"} · ${latest.event || ""} · ${formatTime(latest.updatedAt)}`;
+      row.appendChild(detail);
+      renderJobsSummary(row, latest.id);
       if (group.runs.length > 1) {
-        const stack = document.createElement("div");
-        stack.className = "meta-line secondary";
-        stack.textContent = `Stacked runs: ${group.runs.length}`;
-        card.appendChild(stack);
+        renderRunEntries(row, group.runs);
       }
-      cards.appendChild(card);
-      return;
+    } else {
+      const detail = document.createElement("div");
+      detail.className = "ops-item-detail";
+      detail.textContent = group.runs.length > 1
+        ? `Stacked: ${group.runs.length} · ${latest.headBranch || "(no branch)"}`
+        : `${latest.headBranch || "(no branch)"}`;
+      row.appendChild(detail);
     }
 
-    const limited = document.createElement("div");
-    limited.className = "meta-line secondary";
-    limited.textContent = `Branch: ${latest.headBranch || "(no branch)"} | Event: ${latest.event || "(unknown)"} | Updated: ${formatTime(latest.updatedAt)}`;
-    card.appendChild(limited);
-
-    renderJobsSummary(card, latest.id);
-
-    if (group.runs.length > 1) {
-      const stackedHeading = document.createElement("div");
-      stackedHeading.className = "meta-line secondary";
-      stackedHeading.textContent = "Stack contents";
-      card.appendChild(stackedHeading);
-      renderRunEntries(card, group.runs);
-    }
-
-    cards.appendChild(card);
+    list.appendChild(row);
   });
-  lane.appendChild(cards);
-  root.appendChild(lane);
+  bucket.appendChild(list);
+  root.appendChild(bucket);
 }
 
 function renderActions() {
@@ -391,38 +405,77 @@ function renderOpsPullRequestOverviewLane(targetId, heading, entries) {
   }
   root.innerHTML = "";
 
-  const lane = document.createElement("section");
-  lane.className = "lane";
-  lane.appendChild(textLine(`${heading} (${entries.length})`, "lane-title"));
+  const bucket = document.createElement("div");
+  bucket.className = "ops-bucket";
+
+  const headingEl = document.createElement("div");
+  headingEl.className = "ops-bucket-heading";
+  headingEl.textContent = `${heading} (${entries.length})`;
+  bucket.appendChild(headingEl);
 
   if (!entries.length) {
-    lane.appendChild(emptyText("No pull requests"));
-    root.appendChild(lane);
+    bucket.appendChild(emptyText("No pull requests"));
+    root.appendChild(bucket);
     return;
   }
 
-  const cards = document.createElement("div");
-  cards.className = "lane-cards";
+  const list = document.createElement("div");
+  list.className = "ops-item-list";
   entries.slice(0, 8).forEach((entry) => {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "card";
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "ops-item-row";
     if (state.selected?.kind === "pullRequest" && state.selected.id === entry.id) {
-      card.classList.add("selected");
+      row.classList.add("selected");
     }
-    card.onclick = () => {
+    row.onclick = () => {
       state.selected = { kind: "pullRequest", id: entry.id };
       setActiveWorkspaceTab("pullRequests");
       requestPullRequestInsights(entry, false);
       render();
     };
-    card.appendChild(textLine(`#${entry.number} ${entry.title}`, "title"));
-    card.appendChild(textLine(`${entry.repo} | ${entry.reviewState}`, "meta-line"));
-    card.appendChild(textLine(`Updated ${formatAge(entry.updatedAt)}`, "meta-line secondary"));
-    cards.appendChild(card);
+
+    const rowHeader = document.createElement("div");
+    rowHeader.className = "ops-item-header";
+
+    const dot = document.createElement("span");
+    dot.className = `ops-item-dot ${opsDotClassForPRReviewState(entry.reviewState)}`;
+    rowHeader.appendChild(dot);
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "ops-item-title-wrap";
+    const name = document.createElement("span");
+    name.className = "ops-item-name";
+    name.textContent = `#${entry.number} ${entry.title}`;
+    titleWrap.appendChild(name);
+    const badge = document.createElement("span");
+    badge.className = "ops-item-badge";
+    badge.textContent = entry.repo;
+    titleWrap.appendChild(badge);
+    rowHeader.appendChild(titleWrap);
+
+    const actions = document.createElement("div");
+    actions.className = "ops-item-actions";
+    if (entry.url) {
+      const openBtn = document.createElement("button");
+      openBtn.className = "ops-item-btn ops-item-btn--primary";
+      openBtn.type = "button";
+      openBtn.textContent = "Open";
+      openBtn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "openPullRequest", url: entry.url }); };
+      actions.appendChild(openBtn);
+    }
+    rowHeader.appendChild(actions);
+    row.appendChild(rowHeader);
+
+    const meta = document.createElement("div");
+    meta.className = "ops-item-meta";
+    meta.textContent = `${entry.reviewState} · ${formatAge(entry.updatedAt)}`;
+    row.appendChild(meta);
+
+    list.appendChild(row);
   });
-  lane.appendChild(cards);
-  root.appendChild(lane);
+  bucket.appendChild(list);
+  root.appendChild(bucket);
 }
 
 function renderOpsActionOverviewLane(targetId, heading, entries) {
@@ -432,37 +485,76 @@ function renderOpsActionOverviewLane(targetId, heading, entries) {
   }
   root.innerHTML = "";
 
-  const lane = document.createElement("section");
-  lane.className = "lane";
-  lane.appendChild(textLine(`${heading} (${entries.length})`, "lane-title"));
+  const bucket = document.createElement("div");
+  bucket.className = "ops-bucket";
+
+  const headingEl = document.createElement("div");
+  headingEl.className = "ops-bucket-heading";
+  headingEl.textContent = `${heading} (${entries.length})`;
+  bucket.appendChild(headingEl);
 
   if (!entries.length) {
-    lane.appendChild(emptyText("No workflow runs"));
-    root.appendChild(lane);
+    bucket.appendChild(emptyText("No workflow runs"));
+    root.appendChild(bucket);
     return;
   }
 
-  const cards = document.createElement("div");
-  cards.className = "lane-cards";
+  const list = document.createElement("div");
+  list.className = "ops-item-list";
   entries.slice(0, 8).forEach((entry) => {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "card";
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "ops-item-row";
     if (state.selected?.kind === "run" && state.selected.id === entry.id) {
-      card.classList.add("selected");
+      row.classList.add("selected");
     }
-    card.onclick = () => {
+    row.onclick = () => {
       state.selected = { kind: "run", id: entry.id };
       setActiveWorkspaceTab("actions");
       render();
     };
-    card.appendChild(textLine(entry.workflowName || entry.name || "Workflow", "title"));
-    card.appendChild(textLine(`${entry.repo} | ${entry.status}${entry.conclusion ? `/${entry.conclusion}` : ""}`, "meta-line"));
-    card.appendChild(textLine(`${entry.headBranch || "(no branch)"} | Updated ${formatAge(entry.updatedAt)}`, "meta-line secondary"));
-    cards.appendChild(card);
+
+    const rowHeader = document.createElement("div");
+    rowHeader.className = "ops-item-header";
+
+    const dot = document.createElement("span");
+    dot.className = `ops-item-dot ${opsDotClassForRunConclusion(entry)}`;
+    rowHeader.appendChild(dot);
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "ops-item-title-wrap";
+    const name = document.createElement("span");
+    name.className = "ops-item-name";
+    name.textContent = entry.workflowName || entry.name || "Workflow";
+    titleWrap.appendChild(name);
+    const badge = document.createElement("span");
+    badge.className = "ops-item-badge";
+    badge.textContent = entry.repo;
+    titleWrap.appendChild(badge);
+    rowHeader.appendChild(titleWrap);
+
+    const actions = document.createElement("div");
+    actions.className = "ops-item-actions";
+    if (entry.url) {
+      const openBtn = document.createElement("button");
+      openBtn.className = "ops-item-btn ops-item-btn--primary";
+      openBtn.type = "button";
+      openBtn.textContent = "Open";
+      openBtn.onclick = (e) => { e.stopPropagation(); openRun(entry.url); };
+      actions.appendChild(openBtn);
+    }
+    rowHeader.appendChild(actions);
+    row.appendChild(rowHeader);
+
+    const meta = document.createElement("div");
+    meta.className = "ops-item-meta";
+    meta.textContent = `${entry.status}${entry.conclusion ? `/${entry.conclusion}` : ""} · ${entry.headBranch || "(no branch)"} · ${formatAge(entry.updatedAt)}`;
+    row.appendChild(meta);
+
+    list.appendChild(row);
   });
-  lane.appendChild(cards);
-  root.appendChild(lane);
+  bucket.appendChild(list);
+  root.appendChild(bucket);
 }
 
 function renderOpsOverviews() {

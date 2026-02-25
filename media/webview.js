@@ -281,6 +281,21 @@ function createUnknownCliAuthClientState(service) {
   };
 }
 
+function inferCliAuthService(label, status) {
+  const fromStatus = typeof status?.service === "string" ? status.service.trim().toLowerCase() : "";
+  if (fromStatus === "copilot" || fromStatus === "gemini" || fromStatus === "codex") {
+    return fromStatus;
+  }
+  const loweredLabel = String(label || "").trim().toLowerCase();
+  if (loweredLabel.includes("copilot")) {
+    return "copilot";
+  }
+  if (loweredLabel.includes("gemini")) {
+    return "gemini";
+  }
+  return "codex";
+}
+
 function normalizeCliAuthClientState(raw, service) {
   const fallback = createUnknownCliAuthClientState(service);
   if (!raw || typeof raw !== "object") {
@@ -305,7 +320,7 @@ function normalizeCliAuthClientState(raw, service) {
 }
 
 function formatCliAuthButtonText(label, status) {
-  const normalized = normalizeCliAuthClientState(status, String(label || "").toLowerCase().includes("copilot") ? "copilot" : "codex");
+  const normalized = normalizeCliAuthClientState(status, inferCliAuthService(label, status));
   const stateLabel = normalized.state === "signed-in"
     ? "Signed In"
     : normalized.state === "signed-out"
@@ -321,7 +336,7 @@ function formatCliAuthButtonText(label, status) {
 }
 
 function formatCliAuthMeta(label, status) {
-  const normalized = normalizeCliAuthClientState(status, String(label || "").toLowerCase().includes("copilot") ? "copilot" : "codex");
+  const normalized = normalizeCliAuthClientState(status, inferCliAuthService(label, status));
   if (normalized.state === "limited") {
     return `${label}: limited`;
   }
@@ -348,7 +363,8 @@ const state = {
   auth: {
     ok: false,
     codex: createUnknownCliAuthClientState("codex"),
-    copilot: createUnknownCliAuthClientState("copilot")
+    copilot: createUnknownCliAuthClientState("copilot"),
+    gemini: createUnknownCliAuthClientState("gemini")
   },
   filters: {
     repo: "all",
@@ -369,7 +385,6 @@ const state = {
   showArchived: persisted.showArchived === true,
   showOlderSessions: persisted.showOlderSessions === true,
   ui: {
-    opsSettingsOpen: persisted.opsSettingsOpen === true,
     workspaceControlsOpen: persisted.workspaceControlsOpen !== false,
     boardSectionOpen: persisted.boardSectionOpen !== false,
     issuesSectionOpen: persisted.issuesSectionOpen !== false,
@@ -413,8 +428,10 @@ const state = {
     dispatchConfig: {
       codexCliPath: "codex",
       copilotCliPath: "copilot",
+      geminiCliPath: "gemini",
       codexDefaultModel: null,
       copilotDefaultModel: null,
+      geminiDefaultModel: null,
       copilotCloudEnabled: false
     }
   },
@@ -501,7 +518,6 @@ bindJarvisAudioUnlockHandlers();
 
 function persistUiState() {
   vscode.setState({
-    opsSettingsOpen: state.ui.opsSettingsOpen,
     workspaceControlsOpen: state.ui.workspaceControlsOpen,
     boardSectionOpen: state.ui.boardSectionOpen,
     issuesSectionOpen: state.ui.issuesSectionOpen,
@@ -786,10 +802,7 @@ function renderLeftSections() {
 }
 
 function renderTopbarSections() {
-  const settingsSection = byId("opsSettingsSection");
-  if (settingsSection instanceof HTMLDetailsElement) {
-    settingsSection.open = state.ui.opsSettingsOpen;
-  }
+  // quickbar is always visible — no collapsed state to restore
 }
 
 function setStatus(text, cls) {
@@ -997,28 +1010,8 @@ function updateFilterOptions(snapshot) {
   applyOptions(byId("laneFilter"), ["all", ...statusOrder]);
 }
 
-function renderAuth() {
-  const signIn = byId("signInButton");
-  const codexSignIn = byId("signInCodexButton");
-  const copilotSignIn = byId("signInCopilotButton");
-
-  if (signIn) {
-    signIn.textContent = state.auth.ok ? "Signed In" : "Sign In";
-    signIn.disabled = state.auth.ok;
-  }
-
-  if (codexSignIn) {
-    codexSignIn.textContent = formatCliAuthButtonText("Codex", state.auth.codex);
-    const detail = state.auth.codex?.detail ? ` ${state.auth.codex.detail}` : "";
-    codexSignIn.title = `${state.auth.codex?.summary || "Status unavailable."}${detail}`.trim();
-  }
-
-  if (copilotSignIn) {
-    copilotSignIn.textContent = formatCliAuthButtonText("Copilot", state.auth.copilot);
-    const detail = state.auth.copilot?.detail ? ` ${state.auth.copilot.detail}` : "";
-    copilotSignIn.title = `${state.auth.copilot?.summary || "Status unavailable."}${detail}`.trim();
-  }
-}
+// Auth state is maintained for internal use (Jarvis, Composer, etc.) but not shown in the webview.
+// Sign-in flows happen via supervisor terminals — no UI buttons needed here.
 
 function formatCooldownUntil(isoString) {
   if (typeof isoString !== "string" || isoString.length === 0) {
@@ -1705,6 +1698,42 @@ function selectedRun() {
   return state.snapshot.actions.runs.find((entry) => entry.id === state.selected.id) || null;
 }
 
+// ── Ops-center dot class helpers (shared with actions/PRs overlays) ──
+function opsDotClassForPriority(priority) {
+  const p = String(priority || "").toLowerCase();
+  if (p.includes("critical") || p === "p0") return "ops-item-dot--critical";
+  if (p.includes("high") || p === "p1") return "ops-item-dot--high";
+  if (p.includes("medium") || p === "p2") return "ops-item-dot--medium";
+  return "";
+}
+
+function opsDotClassForStatus(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "done") return "ops-item-dot--done";
+  if (s === "in progress" || s === "claimed") return "ops-item-dot--inprogress";
+  if (s === "blocked" || s === "failed") return "ops-item-dot--failure";
+  if (s === "in review" || s === "qa required" || s === "qa feedback") return "ops-item-dot--review";
+  return "";
+}
+
+function opsDotClassForRunConclusion(run) {
+  const conclusion = String(run.conclusion || "").toLowerCase();
+  const status = String(run.status || "").toLowerCase();
+  if (["failure", "cancelled", "action_required", "timed_out"].includes(conclusion)) return "ops-item-dot--failure";
+  if (conclusion === "success") return "ops-item-dot--success";
+  if (status === "in_progress") return "ops-item-dot--inprogress";
+  if (status === "queued" || status === "waiting") return "ops-item-dot--queued";
+  return "";
+}
+
+function opsDotClassForPRReviewState(reviewState) {
+  const s = String(reviewState || "").toLowerCase();
+  if (s === "approved") return "ops-item-dot--done";
+  if (s === "changes_requested") return "ops-item-dot--failure";
+  if (s === "review_required") return "ops-item-dot--review";
+  return "";
+}
+
 function renderBoard() {
   const root = byId("boardLanes");
   const counts = byId("boardCounts");
@@ -1719,91 +1748,111 @@ function renderBoard() {
   }
 
   statusOrder.forEach((status) => {
-    const lane = document.createElement("section");
-    lane.className = "lane";
     const laneItems = items.filter((item) => item.status === status);
     const collapsed = Boolean(state.laneCollapse[status]);
 
-    const header = document.createElement("div");
-    header.className = "lane-header";
-    const left = document.createElement("div");
-    left.className = "lane-title-wrap";
+    const bucket = document.createElement("div");
+    bucket.className = "ops-bucket";
+
+    const headingEl = document.createElement("div");
+    headingEl.className = "ops-bucket-heading";
+
     const toggle = document.createElement("button");
-    toggle.className = "lane-toggle";
+    toggle.className = "ops-bucket-heading-toggle";
     toggle.type = "button";
-    toggle.textContent = collapsed ? ">" : "v";
-    toggle.onclick = () => {
+    toggle.textContent = collapsed ? "›" : "⌄";
+    toggle.title = collapsed ? "Expand" : "Collapse";
+    toggle.onclick = (e) => {
+      e.stopPropagation();
       state.laneCollapse[status] = !state.laneCollapse[status];
       renderBoard();
     };
-    left.appendChild(toggle);
-    const title = document.createElement("div");
-    title.className = "lane-title";
-    title.textContent = `${status} (${laneItems.length})`;
-    left.appendChild(title);
-    header.appendChild(left);
-    lane.appendChild(header);
+    headingEl.appendChild(toggle);
 
-    if (!laneItems.length) {
-      lane.appendChild(emptyText("No items"));
-      root.appendChild(lane);
+    const headText = document.createElement("span");
+    headText.textContent = `${status} (${laneItems.length})`;
+    headingEl.appendChild(headText);
+    bucket.appendChild(headingEl);
+
+    if (!laneItems.length || collapsed) {
+      root.appendChild(bucket);
       return;
     }
 
-    if (collapsed) {
-      lane.appendChild(emptyText("Collapsed"));
-      root.appendChild(lane);
-      return;
-    }
-
-    const cards = document.createElement("div");
-    cards.className = "lane-cards";
+    const list = document.createElement("div");
+    list.className = "ops-item-list";
     laneItems.slice(0, 50).forEach((item) => {
-      const card = document.createElement("button");
-      card.className = "card";
-      card.type = "button";
-      if (state.selected?.kind === "issue" && state.selected.id === item.itemId) card.classList.add("selected");
-      card.onclick = () => {
+      const row = document.createElement("button");
+      row.className = "ops-item-row";
+      row.type = "button";
+      if (state.selected?.kind === "issue" && state.selected.id === item.itemId) {
+        row.classList.add("selected");
+      }
+      row.onclick = () => {
         state.selected = { kind: "issue", id: item.itemId };
         render();
       };
 
-      const cardTitle = document.createElement("div");
-      cardTitle.className = "title";
-      cardTitle.textContent = item.title || "(Untitled)";
-      card.appendChild(cardTitle);
+      const rowHeader = document.createElement("div");
+      rowHeader.className = "ops-item-header";
+
+      const dot = document.createElement("span");
+      dot.className = `ops-item-dot ${opsDotClassForPriority(item.priority) || opsDotClassForStatus(item.status)}`;
+      rowHeader.appendChild(dot);
+
+      const titleWrap = document.createElement("div");
+      titleWrap.className = "ops-item-title-wrap";
+      const name = document.createElement("span");
+      name.className = "ops-item-name";
+      name.textContent = item.title || "(Untitled)";
+      titleWrap.appendChild(name);
+      if (item.priority) {
+        const badge = document.createElement("span");
+        badge.className = "ops-item-badge";
+        badge.textContent = item.priority;
+        titleWrap.appendChild(badge);
+      }
+      rowHeader.appendChild(titleWrap);
+
+      const actions = document.createElement("div");
+      actions.className = "ops-item-actions";
+      if (item.url) {
+        const openBtn = document.createElement("button");
+        openBtn.className = "ops-item-btn ops-item-btn--primary";
+        openBtn.type = "button";
+        openBtn.textContent = "Open";
+        openBtn.title = "Open issue";
+        openBtn.onclick = (e) => {
+          e.stopPropagation();
+          vscode.postMessage({ type: "openIssue", url: item.url });
+        };
+        actions.appendChild(openBtn);
+      }
+      rowHeader.appendChild(actions);
+      row.appendChild(rowHeader);
+
       const meta = document.createElement("div");
-      meta.className = "meta-line";
-      meta.textContent = `${item.repo || "unknown"} | #${item.issueNumber || "?"}`;
-      card.appendChild(meta);
+      meta.className = "ops-item-meta";
+      const metaParts = [`${item.repo || "unknown"} #${item.issueNumber || "?"}`];
+      if (item.assignees?.length) metaParts.push(item.assignees.slice(0, 2).join(", "));
+      meta.textContent = metaParts.join(" · ");
+      row.appendChild(meta);
 
-      const chips = document.createElement("div");
-      chips.className = "card-chips";
-      addChip(chips, item.workMode, "workmode");
-      addChip(chips, item.area, "area");
-      addChip(chips, item.priority, "priority");
-      addChip(chips, item.size, "size");
-      if (chips.childNodes.length > 0) {
-        card.appendChild(chips);
+      const detailParts = [];
+      if (item.workMode) detailParts.push(item.workMode);
+      if (item.area) detailParts.push(item.area);
+      if (item.size) detailParts.push(item.size);
+      if (detailParts.length) {
+        const detail = document.createElement("div");
+        detail.className = "ops-item-detail";
+        detail.textContent = detailParts.join(" · ");
+        row.appendChild(detail);
       }
 
-      if (item.claimOwner) {
-        const owner = document.createElement("div");
-        owner.className = "meta-line secondary";
-        owner.textContent = `Claim owner: ${item.claimOwner}`;
-        card.appendChild(owner);
-      }
-      if (item.assignees?.length) {
-        const assignees = document.createElement("div");
-        assignees.className = "meta-line secondary";
-        assignees.textContent = `Assignees: ${item.assignees.join(", ")}`;
-        card.appendChild(assignees);
-      }
-
-      cards.appendChild(card);
+      list.appendChild(row);
     });
-    lane.appendChild(cards);
-    root.appendChild(lane);
+    bucket.appendChild(list);
+    root.appendChild(bucket);
   });
 }
 
@@ -1835,35 +1884,62 @@ function renderIssuesWorkbench() {
   }
 
   filtered.slice(0, 120).forEach((item) => {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "card";
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "ops-item-row";
     if (state.selected?.kind === "issue" && state.selected.id === item.itemId) {
-      card.classList.add("selected");
+      row.classList.add("selected");
     }
-    card.onclick = () => {
+    row.onclick = () => {
       state.selected = { kind: "issue", id: item.itemId };
       render();
     };
 
-    const title = document.createElement("div");
-    title.className = "title";
-    title.textContent = `#${item.issueNumber || "?"} ${item.title || "(Untitled)"}`;
-    card.appendChild(title);
+    const rowHeader = document.createElement("div");
+    rowHeader.className = "ops-item-header";
+
+    const dot = document.createElement("span");
+    dot.className = `ops-item-dot ${opsDotClassForPriority(item.priority) || opsDotClassForStatus(item.status)}`;
+    rowHeader.appendChild(dot);
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "ops-item-title-wrap";
+    const name = document.createElement("span");
+    name.className = "ops-item-name";
+    name.textContent = `#${item.issueNumber || "?"} ${item.title || "(Untitled)"}`;
+    titleWrap.appendChild(name);
+    const repoBadge = document.createElement("span");
+    repoBadge.className = "ops-item-badge";
+    repoBadge.textContent = item.repo;
+    titleWrap.appendChild(repoBadge);
+    rowHeader.appendChild(titleWrap);
+
+    const actions = document.createElement("div");
+    actions.className = "ops-item-actions";
+    if (item.url) {
+      const openBtn = document.createElement("button");
+      openBtn.className = "ops-item-btn ops-item-btn--primary";
+      openBtn.type = "button";
+      openBtn.textContent = "Open";
+      openBtn.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "openIssue", url: item.url }); };
+      actions.appendChild(openBtn);
+    }
+    rowHeader.appendChild(actions);
+    row.appendChild(rowHeader);
 
     const meta = document.createElement("div");
-    meta.className = "meta-line";
-    meta.textContent = `${item.repo} | ${item.status} | ${item.workMode || "(no work mode)"}`;
-    card.appendChild(meta);
+    meta.className = "ops-item-meta";
+    meta.textContent = `${item.status} · ${item.workMode || "(no mode)"}${item.priority ? ` · ${item.priority}` : ""}`;
+    row.appendChild(meta);
 
     if (item.labels?.length) {
-      const labels = document.createElement("div");
-      labels.className = "meta-line secondary";
-      labels.textContent = `Labels: ${item.labels.slice(0, 4).join(", ")}${item.labels.length > 4 ? "..." : ""}`;
-      card.appendChild(labels);
+      const detail = document.createElement("div");
+      detail.className = "ops-item-detail";
+      detail.textContent = item.labels.slice(0, 3).join(", ");
+      row.appendChild(detail);
     }
 
-    listRoot.appendChild(card);
+    listRoot.appendChild(row);
   });
 
   const selected = selectedIssue() || filtered[0] || null;
@@ -1928,7 +2004,6 @@ function renderIssuesWorkbench() {
 }
 function render() {
   if (!state.snapshot) return;
-  renderAuth();
   renderTopbarSections();
   renderJarvisStatus();
   renderThemeControls();
@@ -1950,7 +2025,6 @@ function render() {
   renderTerminalPanel();
   renderControlMeta();
   renderStopButtons();
-  renderFeed();
   renderContextChips();
   renderChatTimeline();
 }

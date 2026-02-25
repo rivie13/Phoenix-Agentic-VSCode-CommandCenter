@@ -1,15 +1,9 @@
 function bindEvents() {
-  const signInButton = byId("signInButton");
-  const signInCodexButton = byId("signInCodexButton");
-  const signInCopilotButton = byId("signInCopilotButton");
-  const geminiSignInButton = byId("geminiSignInButton");
-  const geminiApiKeyButton = byId("geminiApiKeyButton");
-  const pollinationsSignInButton = byId("pollinationsSignInButton");
-  const pollinationsApiKeyButton = byId("pollinationsApiKeyButton");
   const configureSupervisorButton = byId("configureSupervisorButton");
   const configureJarvisVoiceButton = byId("configureJarvisVoiceButton");
   const configureJarvisVoiceButtonHub = byId("configureJarvisVoiceButtonHub");
   const configureModelHubButton = byId("configureModelHubButton");
+  const openSettingsButton = byId("openSettingsButton");
   const jarvisCallButton = byId("jarvisCallButton");
   const jarvisCallButtonHub = byId("jarvisCallButtonHub");
   const jarvisModeButton = byId("jarvisModeButton");
@@ -74,7 +68,6 @@ function bindEvents() {
   const saveCustomSchemeButton = byId("saveCustomSchemeButton");
   const collapseAllLeftSectionsButton = byId("collapseAllLeftSections");
   const expandAllLeftSectionsButton = byId("expandAllLeftSections");
-  const opsSettingsSection = byId("opsSettingsSection");
   const workspaceControlsSection = byId("workspaceControlsSection");
   const boardSection = byId("boardSection");
   const issuesSection = byId("issuesSection");
@@ -114,17 +107,11 @@ function bindEvents() {
   const stopSessionFromComposerButton = byId("stopSessionFromComposerButton");
   const sendAgentMessageButton = byId("sendAgentMessageButton");
 
-  if (signInButton) signInButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.signIn" }));
-  if (signInCodexButton) signInCodexButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.signInCodexCli" }));
-  if (signInCopilotButton) signInCopilotButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.signInCopilotCli" }));
-  if (geminiSignInButton) geminiSignInButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.geminiSignIn" }));
-  if (geminiApiKeyButton) geminiApiKeyButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.geminiSetApiKey" }));
-  if (pollinationsSignInButton) pollinationsSignInButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.pollinationsSignIn" }));
-  if (pollinationsApiKeyButton) pollinationsApiKeyButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.pollinationsSetApiKey" }));
   if (configureSupervisorButton) configureSupervisorButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.configureSupervisorMode" }));
   if (configureJarvisVoiceButton) configureJarvisVoiceButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.configureJarvisVoice" }));
   if (configureJarvisVoiceButtonHub) configureJarvisVoiceButtonHub.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.configureJarvisVoice" }));
   if (configureModelHubButton) configureModelHubButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.configureModelHub" }));
+  if (openSettingsButton) openSettingsButton.addEventListener("click", () => vscode.postMessage({ type: "command", command: "phoenixOps.openSettings" }));
 
   const activateJarvisFromButton = () => {
     if (typeof window.prompt !== "function") {
@@ -530,13 +517,6 @@ function bindEvents() {
     });
   }
 
-  if (opsSettingsSection instanceof HTMLDetailsElement) {
-    opsSettingsSection.addEventListener("toggle", () => {
-      state.ui.opsSettingsOpen = opsSettingsSection.open;
-      persistUiState();
-    });
-  }
-
   if (workspaceControlsSection instanceof HTMLDetailsElement) {
     workspaceControlsSection.addEventListener("toggle", () => {
       state.ui.workspaceControlsOpen = workspaceControlsSection.open;
@@ -817,7 +797,7 @@ window.addEventListener("message", (event) => {
     state.auth.ok = Boolean(payload.ok);
     state.auth.codex = normalizeCliAuthClientState(payload.codex, "codex");
     state.auth.copilot = normalizeCliAuthClientState(payload.copilot, "copilot");
-    renderAuth();
+    state.auth.gemini = normalizeCliAuthClientState(payload.gemini, "gemini");
     if (typeof renderControlMeta === "function") {
       renderControlMeta();
     }
@@ -871,11 +851,17 @@ window.addEventListener("message", (event) => {
       copilotCliPath: typeof dispatchConfig.copilotCliPath === "string" && dispatchConfig.copilotCliPath.trim()
         ? dispatchConfig.copilotCliPath.trim()
         : "copilot",
+      geminiCliPath: typeof dispatchConfig.geminiCliPath === "string" && dispatchConfig.geminiCliPath.trim()
+        ? dispatchConfig.geminiCliPath.trim()
+        : "gemini",
       codexDefaultModel: typeof dispatchConfig.codexDefaultModel === "string" && dispatchConfig.codexDefaultModel.trim()
         ? dispatchConfig.codexDefaultModel.trim()
         : null,
       copilotDefaultModel: typeof dispatchConfig.copilotDefaultModel === "string" && dispatchConfig.copilotDefaultModel.trim()
         ? dispatchConfig.copilotDefaultModel.trim()
+        : null,
+      geminiDefaultModel: typeof dispatchConfig.geminiDefaultModel === "string" && dispatchConfig.geminiDefaultModel.trim()
+        ? dispatchConfig.geminiDefaultModel.trim()
         : null,
       copilotCloudEnabled: Boolean(dispatchConfig.copilotCloudEnabled)
     };

@@ -215,8 +215,9 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
     const useDist = fs.existsSync(distServerPath);
     const tsxCliPath = path.join(repoPath, "node_modules", ".bin", process.platform === "win32" ? "tsx.cmd" : "tsx");
     const useTsx = !useDist && fs.existsSync(tsxCliPath);
+    const nodeCommand = this.resolveNodeCommand();
     const command = useDist
-      ? process.execPath
+      ? nodeCommand
       : useTsx
         ? tsxCliPath
         : (process.platform === "win32" ? "npm.cmd" : "npm");
@@ -231,6 +232,9 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
     this.log(`Launch command: ${command} ${args.join(" ")}`);
     if (!useDist && !useTsx) {
       this.log("Falling back to npm watch mode because tsx executable was not found in node_modules/.bin.");
+    }
+    if (useDist && process.execPath.toLowerCase() !== nodeCommand.toLowerCase()) {
+      this.log(`Resolved Node runtime for dist launch: ${nodeCommand} (process.execPath=${process.execPath})`);
     }
     this.log(
       `Jarvis env: baseUrl=${config.jarvisApiBaseUrl || "(auto)"} apiKeyConfigured=${Boolean(config.jarvisApiKey)} ` +
@@ -425,6 +429,21 @@ export class WorkspaceSupervisorManager implements vscode.Disposable {
     return {
       Authorization: `Bearer ${token}`
     };
+  }
+
+  private resolveNodeCommand(): string {
+    const execPath = process.execPath;
+    const base = path.basename(execPath).toLowerCase();
+    if (base === "node" || base === "node.exe") {
+      return execPath;
+    }
+
+    const siblingNode = path.join(path.dirname(execPath), process.platform === "win32" ? "node.exe" : "node");
+    if (fs.existsSync(siblingNode)) {
+      return siblingNode;
+    }
+
+    return process.platform === "win32" ? "node.exe" : "node";
   }
 
   private log(message: string): void {

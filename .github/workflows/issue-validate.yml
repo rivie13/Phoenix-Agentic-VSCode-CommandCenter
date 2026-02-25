@@ -1,0 +1,472 @@
+# Validate task issues and auto-populate project board fields.
+#
+# When an issue is opened/edited with the "task" label, this workflow:
+#   1. Parses structured fields from the issue body (GitHub issue form YAML output).
+#   2. Validates required fields are present and well-formed.
+#   3. Auto-adds the issue to the project board (if not already).
+#   4. Sets board fields: Priority, Size, Area, Work mode, Status → Ready.
+#   5. Comments with a summary or validation errors.
+#
+# Issue body fields parsed (from task.yml template):
+#   - Target repository, Parent branch, Working branch, Work mode
+#   - Separate worktree, Priority, Size, Area
+#   - Depends on, Lock key, Key files
+#
+# The workflow reads form field values from markdown headings like:
+#   ### Parent branch (PR target)
+#   feature/phase-3-mcp-client
+
+name: Validate & Sync Task Issue
+
+on:
+  issues:
+    types: [opened, edited, labeled]
+
+env:
+  PROJECT_NUMBER: 3
+
+jobs:
+  validate-task:
+    if: >-
+      contains(github.event.issue.labels.*.name, 'task')
+      || (github.event.action == 'labeled' && github.event.label.name == 'task')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Parse and validate task issue, sync to project board
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_BOARD_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueNumber = context.payload.issue.number;
+            const body = context.payload.issue.body || '';
+            const projectNumber = Number(process.env.PROJECT_NUMBER);
+
+            // ── Parse form fields from issue body ───────────────────
+            // GitHub issue forms render as:  ### Field Label\n\nValue\n
+            const parseField = (label) => {
+              // Escape special regex chars in the label
+              const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const regex = new RegExp(
+                `###\\s*${escaped}\\s*\\n+([\\s\\S]*?)(?=\\n###|$)`,
+                'i'
+              );
+              const match = body.match(regex);
+              if (!match) return '';
+              return match[1].trim().replace(/^_No response_$/i, '');
+            };
+
+            const fields = {
+              repo:             parseField('Target repository'),
+              parentBranch:     parseField('Parent branch \\(PR target\\)'),
+              workingBranch:    parseField('Working branch'),
+              workMode:         parseField('Work mode'),
+              separateWorktree: parseField('Separate worktree\\?'),
+              priority:         parseField('Priority'),
+              size:             parseField('Size'),
+              area:             parseField('Area'),
+              description:      parseField('Task description'),
+              acceptance:       parseField('Acceptance criteria'),
+              keyFiles:         parseField('Key files'),
+              dependsOn:        parseField('Depends on'),
+              lockKey:          parseField('Lock key'),
+            };
+
+            // ── Validate required fields ────────────────────────────
+            const errors = [];
+
+            const requiredFields = [
+              ['repo',           'Target repository'],
+              ['parentBranch',   'Parent branch (PR target)'],
+              ['workingBranch',  'Working branch'],
+              ['workMode',       'Work mode'],
+              ['priority',       'Priority'],
+              ['size',           'Size'],
+              ['area',           'Area'],
+              ['description',    'Task description'],
+              ['acceptance',     'Acceptance criteria'],
+            ];
+
+            for (const [key, label] of requiredFields) {
+              if (!fields[key]) {
+                errors.push(`**${label}** is missing or empty`);
+              }
+            }
+
+            // Validate branch naming
+            if (fields.workingBranch && !/^(subfeature|feature|fix|chore|docs)\//.test(fields.workingBranch)) {
+              errors.push(`**Working branch** \`${fields.workingBranch}\` doesn't follow naming convention (expected \`subfeature/\`, \`feature/\`, \`fix/\`, etc.)`);
+            }
+
+            // Validate parent branch exists (if provided)
+            if (fields.parentBranch) {
+              try {
+                await github.rest.repos.getBranch({ owner, repo, branch: fields.parentBranch });
+              } catch (e) {
+                if (e.status === 404) {
+                  errors.push(`**Parent branch** \`${fields.parentBranch}\` does not exist in this repo`);
+                }
+              }
+            }
+
+            // Validate area is a known value
+            const VALID_AREAS = [
+              'module/assistant-ui', 'module/mcp', 'module/agent', 'module/addons',
+              'core', 'gateway', 'worker', 'orchestrator',
+              'sdk/client', 'sdk/core', 'contracts', 'infra',
+              'app/pages', 'components', 'content', 'public',
+              'api', 'domain', 'tests', 'docs', 'ci',
+            ];
+            if (fields.area && !VALID_AREAS.includes(fields.area)) {
+              errors.push(`**Area** \`${fields.area}\` is not a recognized area. Valid areas: ${VALID_AREAS.join(', ')}`);
+            }
+
+            // ── If validation fails, comment and stop ───────────────
+            if (errors.length > 0) {
+              const errorBody = [
+                '⚠️ **Task issue validation failed**',
+                '',
+                'The following fields need attention:',
+                '',
+                ...errors.map(e => `- ${e}`),
+                '',
+                'Please edit this issue to fix the errors. The validation will re-run automatically.',
+              ].join('\n');
+
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber, body: errorBody,
+              });
+
+              // Add a label so it's visible
+              try {
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: issueNumber, labels: ['needs-triage'],
+                });
+              } catch (e) {
+                core.info(`Could not add needs-triage label: ${e.message}`);
+              }
+              return;
+            }
+
+            // ── Remove needs-triage label if present ────────────────
+            try {
+              await github.rest.issues.removeLabel({
+                owner, repo, issue_number: issueNumber, name: 'needs-triage',
+              });
+            } catch (e) { /* label may not exist */ }
+
+            // ── Map parsed values to board field option names ────────
+            const priorityMap = {
+              'P0 — Critical / blocker': 'P0',
+              'P1 — High':               'P1',
+              'P2 — Medium':             'P2',
+              'P3 — Low':                'P3',
+            };
+            const sizeMap = {
+              'XS — Extra small (< 1 hour)':     'XS',
+              'S — Small (1-4 hours)':            'S',
+              'M — Medium (half day to full day)': 'M',
+              'L — Large (multi-day)':            'L',
+            };
+            const workModeMap = {
+              'Local IDE':   'Local IDE',
+              'CLI Agent':   'CLI Agent',
+              'Cloud Agent': 'Cloud Agent',
+            };
+            // Area: convert slash names to signal-label format for matching
+            const areaToSignal = (area) => area
+              .replace(/\//g, '-')
+              .replace(/\s+/g, '-')
+              .toLowerCase();
+
+            const boardPriority = priorityMap[fields.priority] || fields.priority;
+            const boardSize = sizeMap[fields.size] || fields.size;
+            const boardWorkMode = workModeMap[fields.workMode] || fields.workMode;
+            const boardArea = fields.area;
+
+            // ── Ensure issue is on the project board ────────────────
+            const findItemQuery = `
+              query($owner: String!, $repo: String!, $issueNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $issueNumber) {
+                    id
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        project { id number }
+                      }
+                    }
+                  }
+                }
+              }`;
+
+            const findResult = await github.graphql(findItemQuery, {
+              owner, repo, issueNumber,
+            });
+
+            const issueNodeId = findResult.repository.issue.id;
+            const items = findResult.repository.issue.projectItems.nodes;
+            let boardItem = items.find(i => i.project.number === projectNumber);
+
+            // If not on the board, add it
+            if (!boardItem) {
+              // First get the project ID
+              const projectQuery = `
+                query($owner: String!, $number: Int!) {
+                  user(login: $owner) {
+                    projectV2(number: $number) { id }
+                  }
+                }`;
+              const projectResult = await github.graphql(projectQuery, {
+                owner, number: projectNumber,
+              });
+              const projectId = projectResult.user.projectV2.id;
+
+              const addMutation = `
+                mutation($projectId: ID!, $contentId: ID!) {
+                  addProjectV2Item(input: { projectId: $projectId, contentId: $contentId }) {
+                    item { id project { id number } }
+                  }
+                }`;
+              const addResult = await github.graphql(addMutation, {
+                projectId, contentId: issueNodeId,
+              });
+              boardItem = addResult.addProjectV2Item.item;
+              core.info(`Added issue #${issueNumber} to project board`);
+            }
+
+            const projectId = boardItem.project.id;
+            const itemId = boardItem.id;
+
+            // ── Fetch project field definitions ─────────────────────
+            const fieldQuery = `
+              query($projectId: ID!) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    fields(first: 30) {
+                      nodes {
+                        __typename
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options { id name }
+                        }
+                        ... on ProjectV2TextField {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }`;
+
+            const fieldResult = await github.graphql(fieldQuery, { projectId });
+            const projectFields = (fieldResult.node.fields.nodes || []).filter(f => f?.name);
+
+            const updateSingleSelect = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }
+                ) { projectV2Item { id } }
+              }`;
+
+            const updateText = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $text: String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { text: $text }
+                  }
+                ) { projectV2Item { id } }
+              }`;
+
+            const updates = [];
+
+            // Helper: find field by name (case-insensitive)
+            const findField = (...names) => projectFields.find(f =>
+              names.some(n => f.name.toLowerCase() === n.toLowerCase())
+            );
+
+            // Helper: find option in a SingleSelect field (fuzzy)
+            const findOption = (field, value) => {
+              if (!field || !field.options) return null;
+              // Exact match first
+              let opt = field.options.find(o => o.name === value);
+              if (opt) return opt;
+              // Case-insensitive
+              opt = field.options.find(o => o.name.toLowerCase() === value.toLowerCase());
+              if (opt) return opt;
+              // Starts-with
+              opt = field.options.find(o => o.name.toLowerCase().startsWith(value.toLowerCase()));
+              return opt;
+            };
+
+            // ── Set Status → Ready ───────────────────────────────────
+            const statusField = findField('Status');
+            if (statusField) {
+              const ready = findOption(statusField, 'Ready');
+              if (ready) {
+                await github.graphql(updateSingleSelect, {
+                  projectId, itemId, fieldId: statusField.id, optionId: ready.id,
+                });
+                updates.push('Status → **Ready**');
+              }
+            }
+
+            // ── Set Priority ─────────────────────────────────────────
+            const priorityField = findField('Priority');
+            if (priorityField && boardPriority) {
+              const opt = findOption(priorityField, boardPriority);
+              if (opt) {
+                await github.graphql(updateSingleSelect, {
+                  projectId, itemId, fieldId: priorityField.id, optionId: opt.id,
+                });
+                updates.push(`Priority → **${opt.name}**`);
+              }
+            }
+
+            // ── Set Size ─────────────────────────────────────────────
+            const sizeField = findField('Size');
+            if (sizeField && boardSize) {
+              const opt = findOption(sizeField, boardSize);
+              if (opt) {
+                await github.graphql(updateSingleSelect, {
+                  projectId, itemId, fieldId: sizeField.id, optionId: opt.id,
+                });
+                updates.push(`Size → **${opt.name}**`);
+              }
+            }
+
+            // ── Set Work mode ────────────────────────────────────────
+            const workModeField = findField('Work mode', 'Work Mode', 'Workmode');
+            if (workModeField && boardWorkMode) {
+              if (workModeField.__typename === 'ProjectV2SingleSelectField') {
+                const opt = findOption(workModeField, boardWorkMode);
+                if (opt) {
+                  await github.graphql(updateSingleSelect, {
+                    projectId, itemId, fieldId: workModeField.id, optionId: opt.id,
+                  });
+                  updates.push(`Work mode → **${opt.name}**`);
+                }
+              } else if (workModeField.__typename === 'ProjectV2TextField') {
+                await github.graphql(updateText, {
+                  projectId, itemId, fieldId: workModeField.id, text: boardWorkMode,
+                });
+                updates.push(`Work mode → **${boardWorkMode}**`);
+              }
+            }
+
+            // ── Set Area ─────────────────────────────────────────────
+            const areaField = findField('Area');
+            if (areaField && boardArea) {
+              if (areaField.__typename === 'ProjectV2SingleSelectField') {
+                const opt = findOption(areaField, boardArea);
+                if (opt) {
+                  await github.graphql(updateSingleSelect, {
+                    projectId, itemId, fieldId: areaField.id, optionId: opt.id,
+                  });
+                  updates.push(`Area → **${opt.name}**`);
+                }
+              } else if (areaField.__typename === 'ProjectV2TextField') {
+                await github.graphql(updateText, {
+                  projectId, itemId, fieldId: areaField.id, text: boardArea,
+                });
+                updates.push(`Area → **${boardArea}**`);
+              }
+            }
+
+            // ── Set Depends On (text field) ──────────────────────────
+            if (fields.dependsOn) {
+              const depsField = findField('Depends On', 'Depends on', 'DependsOn');
+              if (depsField && depsField.__typename === 'ProjectV2TextField') {
+                await github.graphql(updateText, {
+                  projectId, itemId, fieldId: depsField.id, text: fields.dependsOn,
+                });
+                updates.push(`Depends On → **${fields.dependsOn}**`);
+              }
+            }
+
+            // ── Set Lock Key (text field) ────────────────────────────
+            if (fields.lockKey) {
+              const lockField = findField('Lock Key', 'Lock key', 'LockKey');
+              if (lockField && lockField.__typename === 'ProjectV2TextField') {
+                await github.graphql(updateText, {
+                  projectId, itemId, fieldId: lockField.id, text: fields.lockKey,
+                });
+                updates.push(`Lock Key → **${fields.lockKey}**`);
+              }
+            }
+
+            // ── Set Needed Files (text field) ────────────────────────
+            if (fields.keyFiles) {
+              const neededField = findField('Needed Files', 'Needed files', 'NeededFiles');
+              if (neededField && neededField.__typename === 'ProjectV2TextField') {
+                await github.graphql(updateText, {
+                  projectId, itemId, fieldId: neededField.id, text: fields.keyFiles,
+                });
+                updates.push(`Needed Files → set`);
+              }
+            }
+
+            // ── Add base-branch label for cloud-agent resolution ────
+            if (fields.parentBranch) {
+              const baseBranchLabel = `base-branch:${fields.parentBranch}`;
+              try {
+                // Ensure the label exists
+                try {
+                  await github.rest.issues.getLabel({ owner, repo, name: baseBranchLabel });
+                } catch (e) {
+                  if (e.status === 404) {
+                    await github.rest.issues.createLabel({
+                      owner, repo,
+                      name: baseBranchLabel,
+                      color: '0E8A16',
+                      description: `Base branch for cloud-agent: ${fields.parentBranch}`,
+                    });
+                  }
+                }
+                await github.rest.issues.addLabels({
+                  owner, repo, issue_number: issueNumber, labels: [baseBranchLabel],
+                });
+                updates.push(`Label → \`${baseBranchLabel}\``);
+              } catch (e) {
+                core.warning(`Failed to add base-branch label: ${e.message}`);
+              }
+            }
+
+            // ── Post success comment ────────────────────────────────
+            const branchInfo = [
+              `🌿 **Parent branch**: \`${fields.parentBranch}\``,
+              `🔀 **Working branch**: \`${fields.workingBranch}\``,
+              `🖥️ **Work mode**: ${fields.workMode}`,
+              fields.separateWorktree ? `📂 **Worktree**: ${fields.separateWorktree}` : '',
+            ].filter(Boolean).join('\n');
+
+            const boardUpdates = updates.length > 0
+              ? `\n\n📋 **Board fields set:**\n${updates.map(u => `- ${u}`).join('\n')}`
+              : '';
+
+            const summaryBody = [
+              '✅ **Task issue validated successfully**',
+              '',
+              branchInfo,
+              boardUpdates,
+              '',
+              '---',
+              '_This issue is ready for an agent to pick up. The project board has been updated._',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: issueNumber, body: summaryBody,
+            });

@@ -63,6 +63,12 @@
       "problemMatcher": []
     },
     {
+      "label": "Command Center: Gemini CLI Sign-In",
+      "type": "shell",
+      "command": "${input:geminiAuthCommand}",
+      "problemMatcher": []
+    },
+    {
       "label": "Command Center: Package VSIX",
       "type": "shell",
       "command": "npm run package:vsix",
@@ -99,6 +105,12 @@
       "type": "promptString",
       "description": "Command to sign in to Copilot CLI",
       "default": "copilot login"
+    },
+    {
+      "id": "geminiAuthCommand",
+      "type": "promptString",
+      "description": "Command to sign in to Gemini CLI",
+      "default": "gemini auth login"
     }
   ]
 }

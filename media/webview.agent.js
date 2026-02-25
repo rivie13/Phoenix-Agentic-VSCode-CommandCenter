@@ -74,6 +74,14 @@ function selectedSession() {
 
 const terminalInstances = new Map();
 const MAX_TERMINAL_BUFFER_CHARS = 240000;
+const TERMINAL_VISUAL_REFRESH_INTERVAL_MS = 900;
+const terminalWriteQueues = new Map();
+const terminalWriteRafHandles = new Map();
+const terminalMetaUpdateRafHandles = new Map();
+const terminalFitRafHandles = new Map();
+const terminalReportedSizes = new Map();
+let previousTerminalSectionOpen = true;
+let lastTerminalVisualRefreshAt = 0;
 
 function resolveTerminalConstructor() {
   if (typeof window.Terminal === "function") {
@@ -127,8 +135,84 @@ function resolveTerminalFontFamily() {
   return resolveCssVariable("--vscode-editor-font-family", "Consolas, 'Courier New', monospace");
 }
 
+function resolveCssNumberVariable(name, fallback, min, max) {
+  const raw = resolveCssVariable(name, String(fallback));
+  const parsed = Number.parseFloat(String(raw).replace(/px$/i, "").trim());
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function resolveTerminalFontSize() {
+  return resolveCssNumberVariable("--vscode-editor-font-size", 13, 11, 20);
+}
+
+function resolveTerminalLineHeight() {
+  const fontSize = resolveTerminalFontSize();
+  const lineHeightPx = resolveCssNumberVariable("--vscode-editor-line-height", fontSize * 1.45, fontSize, fontSize * 2.2);
+  const ratio = lineHeightPx / fontSize;
+  return Math.max(1.1, Math.min(1.8, ratio));
+}
+
+function resolveTerminalFontWeight() {
+  const raw = resolveCssVariable("--vscode-editor-font-weight", "400").trim();
+  return raw.length > 0 ? raw : "400";
+}
+
+function applyTerminalVisualOptions(terminal) {
+  if (!terminal) {
+    return;
+  }
+  terminal.options.theme = resolveTerminalTheme();
+  terminal.options.fontFamily = resolveTerminalFontFamily();
+  terminal.options.fontSize = resolveTerminalFontSize();
+  terminal.options.lineHeight = resolveTerminalLineHeight();
+  terminal.options.fontWeight = resolveTerminalFontWeight();
+  terminal.options.fontWeightBold = "700";
+  terminal.options.cursorStyle = "block";
+  terminal.options.cursorInactiveStyle = "outline";
+  terminal.options.minimumContrastRatio = 4.5;
+}
+
+function postTerminalSizeIfNeeded(sessionId, cols, rows) {
+  if (!sessionId || state.terminal?.attachedSessionId !== sessionId) {
+    return;
+  }
+  const normalizedCols = Number.isFinite(cols) ? Math.max(20, Math.floor(cols)) : null;
+  const normalizedRows = Number.isFinite(rows) ? Math.max(8, Math.floor(rows)) : null;
+  if (normalizedCols === null || normalizedRows === null) {
+    return;
+  }
+  const previous = terminalReportedSizes.get(sessionId);
+  if (previous && previous.cols === normalizedCols && previous.rows === normalizedRows) {
+    return;
+  }
+  terminalReportedSizes.set(sessionId, { cols: normalizedCols, rows: normalizedRows });
+  vscode.postMessage({
+    type: "agentTerminalInput",
+    sessionId,
+    data: "",
+    cols: normalizedCols,
+    rows: normalizedRows
+  });
+}
+
+function syncTerminalSizeFromInstance(sessionId, instance) {
+  if (!sessionId || !instance?.terminal) {
+    return;
+  }
+  postTerminalSizeIfNeeded(sessionId, instance.terminal.cols, instance.terminal.rows);
+}
+
 function fitTerminalInstance(instance) {
   if (!instance?.wrapper || !instance?.terminal) {
+    return;
+  }
+
+  // Skip fit when the wrapper is not laid out (hidden via display:none).
+  // The fit will happen again via requestAnimationFrame once the wrapper is shown.
+  if (instance.wrapper.style.display === "none") {
     return;
   }
 
@@ -152,6 +236,73 @@ function fitTerminalInstance(instance) {
   } catch {
     // No-op
   }
+}
+
+function scheduleTerminalFit(sessionId, instance) {
+  if (!sessionId || !instance?.terminal || !instance?.wrapper) {
+    return;
+  }
+  if (terminalFitRafHandles.has(sessionId)) {
+    return;
+  }
+  const handle = requestAnimationFrame(() => {
+    terminalFitRafHandles.delete(sessionId);
+    fitTerminalInstance(instance);
+    syncTerminalSizeFromInstance(sessionId, instance);
+  });
+  terminalFitRafHandles.set(sessionId, handle);
+}
+
+function enqueueTerminalWrite(sessionId, chunk) {
+  if (!sessionId || typeof chunk !== "string" || chunk.length === 0) {
+    return;
+  }
+
+  const queue = terminalWriteQueues.get(sessionId) || [];
+  queue.push(chunk);
+  terminalWriteQueues.set(sessionId, queue);
+
+  if (terminalWriteRafHandles.has(sessionId)) {
+    return;
+  }
+
+  const handle = requestAnimationFrame(() => {
+    terminalWriteRafHandles.delete(sessionId);
+    const pending = terminalWriteQueues.get(sessionId) || [];
+    if (!pending.length) {
+      terminalWriteQueues.delete(sessionId);
+      return;
+    }
+    terminalWriteQueues.delete(sessionId);
+    const instance = terminalInstances.get(sessionId);
+    if (instance?.terminal) {
+      instance.terminal.write(pending.join(""));
+    }
+  });
+
+  terminalWriteRafHandles.set(sessionId, handle);
+}
+
+function scheduleTerminalMetaRefresh(sessionId) {
+  if (!sessionId || state.terminal?.attachedSessionId !== sessionId) {
+    return;
+  }
+  if (terminalMetaUpdateRafHandles.has(sessionId)) {
+    return;
+  }
+
+  const handle = requestAnimationFrame(() => {
+    terminalMetaUpdateRafHandles.delete(sessionId);
+    if (state.terminal?.attachedSessionId !== sessionId) {
+      return;
+    }
+    const meta = byId("agentTerminalMeta");
+    if (meta) {
+      meta.textContent = terminalStatusText(sessionId);
+    }
+  });
+
+  terminalMetaUpdateRafHandles.set(sessionId, handle);
 }
 
 function readTerminalBuffer(sessionId) {
@@ -179,8 +330,20 @@ function appendTerminalBuffer(sessionId, chunk) {
   if (!sessionId || typeof chunk !== "string" || chunk.length === 0) {
     return;
   }
+
+  if (!state.terminal || typeof state.terminal !== "object") {
+    state.terminal = { buffers: {}, states: {}, attachedSessionId: null };
+  }
+
+  if (chunk.length >= MAX_TERMINAL_BUFFER_CHARS) {
+    state.terminal.buffers[sessionId] = chunk.slice(chunk.length - MAX_TERMINAL_BUFFER_CHARS);
+    return;
+  }
+
   const current = readTerminalBuffer(sessionId);
-  writeTerminalBuffer(sessionId, current + chunk);
+  const keep = Math.max(0, MAX_TERMINAL_BUFFER_CHARS - chunk.length);
+  const prefix = keep > 0 ? current.slice(-keep) : "";
+  state.terminal.buffers[sessionId] = prefix + chunk;
 }
 
 function terminalStatusText(sessionId) {
@@ -210,6 +373,7 @@ function ensureTerminalInstance(sessionId, mount) {
 
   const TerminalCtor = resolveTerminalConstructor();
   if (!TerminalCtor) {
+    wrapper.classList.add("agent-terminal-shell--fallback");
     wrapper.textContent = "xterm.js unavailable in this webview session.";
     const fallback = {
       terminal: null,
@@ -217,7 +381,10 @@ function ensureTerminalInstance(sessionId, mount) {
       inputSubscription: null,
       fitAddon: null,
       resizeObserver: null,
-      focusListener: null
+      focusListener: null,
+      terminalFocusSubscription: null,
+      terminalBlurSubscription: null,
+      resizeSubscription: null
     };
     terminalInstances.set(sessionId, fallback);
     return fallback;
@@ -228,10 +395,18 @@ function ensureTerminalInstance(sessionId, mount) {
 
   const terminal = new TerminalCtor({
     cursorBlink: true,
+    cursorStyle: "block",
+    cursorInactiveStyle: "outline",
     convertEol: false,
     scrollback: 6000,
-    fontSize: 13,
+    fontSize: resolveTerminalFontSize(),
     fontFamily: resolveTerminalFontFamily(),
+    lineHeight: resolveTerminalLineHeight(),
+    fontWeight: resolveTerminalFontWeight(),
+    fontWeightBold: "700",
+    letterSpacing: 0,
+    allowTransparency: true,
+    minimumContrastRatio: 4.5,
     theme: resolveTerminalTheme()
   });
 
@@ -243,7 +418,12 @@ function ensureTerminalInstance(sessionId, mount) {
     }
   }
 
+  // Temporarily reveal the wrapper so xterm.js can measure container dimensions
+  // during open(). Opening while display:none yields a 0×0 canvas which breaks
+  // keyboard event capture and prevents proper initial sizing.
+  wrapper.style.display = "block";
   terminal.open(wrapper);
+  wrapper.style.display = "none";
   const focusListener = () => {
     state.terminal.attachedSessionId = sessionId;
     terminal.focus();
@@ -262,10 +442,33 @@ function ensureTerminalInstance(sessionId, mount) {
     });
   });
 
+  // Sync PTY dimensions to the server whenever xterm.js is resized (via fit or manual resize).
+  // Without this the PTY on the server retains its original size, causing output wrapping mismatches.
+  const resizeSubscription = typeof terminal.onResize === "function"
+    ? terminal.onResize(({ cols, rows }) => {
+        postTerminalSizeIfNeeded(sessionId, cols, rows);
+      })
+    : null;
+
+  const terminalFocusSubscription = typeof terminal.onFocus === "function"
+    ? terminal.onFocus(() => {
+        wrapper.classList.add("agent-terminal-shell--active");
+      })
+    : null;
+
+  const terminalBlurSubscription = typeof terminal.onBlur === "function"
+    ? terminal.onBlur(() => {
+        wrapper.classList.remove("agent-terminal-shell--active");
+      })
+    : null;
+
   const instance = {
     terminal,
     wrapper,
     inputSubscription,
+    resizeSubscription,
+    terminalFocusSubscription,
+    terminalBlurSubscription,
     fitAddon,
     resizeObserver: null,
     focusListener
@@ -274,14 +477,14 @@ function ensureTerminalInstance(sessionId, mount) {
   if (typeof ResizeObserver === "function") {
     const resizeObserver = new ResizeObserver(() => {
       if (state.terminal.attachedSessionId === sessionId) {
-        fitTerminalInstance(instance);
+        scheduleTerminalFit(sessionId, instance);
       }
     });
     resizeObserver.observe(wrapper);
     instance.resizeObserver = resizeObserver;
   }
 
-  fitTerminalInstance(instance);
+  scheduleTerminalFit(sessionId, instance);
   terminalInstances.set(sessionId, instance);
   return instance;
 }
@@ -292,12 +495,47 @@ function cleanupTerminalInstances(activeSessionIds) {
       return;
     }
 
+    const writeHandle = terminalWriteRafHandles.get(sessionId);
+    if (typeof writeHandle === "number") {
+      cancelAnimationFrame(writeHandle);
+    }
+    terminalWriteRafHandles.delete(sessionId);
+    terminalWriteQueues.delete(sessionId);
+    terminalReportedSizes.delete(sessionId);
+
+    const metaHandle = terminalMetaUpdateRafHandles.get(sessionId);
+    if (typeof metaHandle === "number") {
+      cancelAnimationFrame(metaHandle);
+    }
+    terminalMetaUpdateRafHandles.delete(sessionId);
+
+    const fitHandle = terminalFitRafHandles.get(sessionId);
+    if (typeof fitHandle === "number") {
+      cancelAnimationFrame(fitHandle);
+    }
+    terminalFitRafHandles.delete(sessionId);
+
     const instance = terminalInstances.get(sessionId);
     if (!instance) {
       return;
     }
     try {
       instance.inputSubscription?.dispose?.();
+    } catch {
+      // No-op
+    }
+    try {
+      instance.resizeSubscription?.dispose?.();
+    } catch {
+      // No-op
+    }
+    try {
+      instance.terminalFocusSubscription?.dispose?.();
+    } catch {
+      // No-op
+    }
+    try {
+      instance.terminalBlurSubscription?.dispose?.();
     } catch {
       // No-op
     }
@@ -350,6 +588,10 @@ function renderTerminalPanel() {
   if (section instanceof HTMLDetailsElement) {
     section.open = state.ui.terminalSectionOpen;
   }
+  const sectionIsOpen = !(section instanceof HTMLDetailsElement) || section.open;
+  const sectionReopened = sectionIsOpen && previousTerminalSectionOpen !== sectionIsOpen;
+  previousTerminalSectionOpen = sectionIsOpen;
+
   if (!mount || !meta) {
     return;
   }
@@ -370,6 +612,14 @@ function renderTerminalPanel() {
     return;
   }
 
+  // Remove any stale empty-state nodes (e.g. "No interactive sessions available.")
+  // left from a previous render cycle when there were no active sessions.
+  Array.from(mount.childNodes).forEach((node) => {
+    if (!(node instanceof HTMLElement) || !node.classList.contains("agent-terminal-shell")) {
+      mount.removeChild(node);
+    }
+  });
+
   const previousAttachedSessionId = state.terminal.attachedSessionId;
   const instance = ensureTerminalInstance(sessionId, mount);
   for (const [candidateSessionId, candidate] of terminalInstances.entries()) {
@@ -380,17 +630,27 @@ function renderTerminalPanel() {
   }
 
   if (instance?.terminal) {
-    requestAnimationFrame(() => {
-      fitTerminalInstance(instance);
-    });
+    const now = Date.now();
+    const shouldRefreshVisuals =
+      previousAttachedSessionId !== sessionId
+      || (now - lastTerminalVisualRefreshAt) >= TERMINAL_VISUAL_REFRESH_INTERVAL_MS;
+
+    if (shouldRefreshVisuals) {
+      applyTerminalVisualOptions(instance.terminal);
+      lastTerminalVisualRefreshAt = now;
+    }
+
+    if (previousAttachedSessionId !== sessionId || sectionReopened) {
+      scheduleTerminalFit(sessionId, instance);
+    }
   }
 
   state.terminal.attachedSessionId = sessionId;
+  syncTerminalSizeFromInstance(sessionId, instance);
   meta.textContent = terminalStatusText(sessionId);
   const shouldAutoFocusTerminal =
     previousAttachedSessionId !== sessionId
-    && section instanceof HTMLDetailsElement
-    && section.open
+    && sectionIsOpen
     && !isTextEntryElement(document.activeElement);
 
   if (shouldAutoFocusTerminal && instance?.terminal?.focus) {
@@ -406,17 +666,8 @@ function handleTerminalChunkPayload(payload) {
   }
 
   appendTerminalBuffer(sessionId, data);
-  const instance = terminalInstances.get(sessionId);
-  if (instance?.terminal) {
-    instance.terminal.write(data);
-  }
-
-  if (state.terminal.attachedSessionId === sessionId) {
-    const meta = byId("agentTerminalMeta");
-    if (meta) {
-      meta.textContent = terminalStatusText(sessionId);
-    }
-  }
+  enqueueTerminalWrite(sessionId, data);
+  scheduleTerminalMetaRefresh(sessionId);
 }
 
 function handleTerminalStatePayload(payload) {
@@ -426,12 +677,7 @@ function handleTerminalStatePayload(payload) {
   }
   const nextState = typeof payload?.state === "string" ? payload.state : "connected";
   state.terminal.states[sessionId] = nextState;
-  if (state.terminal.attachedSessionId === sessionId) {
-    const meta = byId("agentTerminalMeta");
-    if (meta) {
-      meta.textContent = terminalStatusText(sessionId);
-    }
-  }
+  scheduleTerminalMetaRefresh(sessionId);
 }
 
 function syncSelectedSessionFromSnapshot() {
@@ -733,6 +979,75 @@ function formatSessionStats(stats) {
   return `${continuesLabel} ${stats.continues} | ${chatsLabel} ${stats.chatMessages} | ${contextLine}${modelLine}`;
 }
 
+function resolveSessionServiceKey(session) {
+  const explicitService = String(session?.service || "").trim().toLowerCase();
+  if (explicitService === "codex" || explicitService === "copilot" || explicitService === "gemini") {
+    return explicitService;
+  }
+
+  const agentId = String(session?.agentId || "").trim().toLowerCase();
+  if (agentId.includes("copilot")) {
+    return "copilot";
+  }
+  if (agentId.includes("gemini")) {
+    return "gemini";
+  }
+  return "codex";
+}
+
+function resolveSessionRateLimitText(session) {
+  const serviceKey = resolveSessionServiceKey(session);
+  const serviceLabel = serviceKey.charAt(0).toUpperCase() + serviceKey.slice(1);
+  const authState = normalizeCliAuthClientState(state.auth?.[serviceKey], serviceKey);
+
+  if (authState.state === "limited") {
+    const detail = authState.detail ? ` (${authState.detail})` : "";
+    return `${serviceLabel}: limited${detail}`;
+  }
+  if (authState.state === "signed-in") {
+    return `${serviceLabel}: ok`;
+  }
+  if (authState.state === "checking") {
+    return `${serviceLabel}: checking`;
+  }
+  if (authState.state === "unavailable") {
+    return `${serviceLabel}: unavailable`;
+  }
+  if (authState.state === "signed-out") {
+    return `${serviceLabel}: signed out`;
+  }
+  return `${serviceLabel}: unknown`;
+}
+
+function buildSessionHoverTitle(session) {
+  const stats = computeSessionStats(session);
+  const contextLine = stats?.contextWindow
+    ? `Context: ${stats.contextTokens.toLocaleString()}/${stats.contextWindow.toLocaleString()} (${stats.contextPercent}%)`
+    : `Context: ${(stats?.contextTokens ?? 0).toLocaleString()} tokens`;
+  const modelLine = stats?.modelName
+    ? `Model: ${stats.modelName}`
+    : `Model: ${String(session?.model || "unknown")}`;
+  const repoLine = `Repo: ${session?.repository || "(none)"} | Branch: ${session?.branch || "(none)"}`;
+  const workspaceLabel = session?.workspace ? session.workspace.replace(/.*[\\/]/, "") : "(none)";
+  const workspaceLine = `Workspace: ${workspaceLabel}`;
+  const activityLine = `Updated: ${formatTime(session?.updatedAt)} | Heartbeat: ${formatAge(session?.lastHeartbeat)}`;
+  const usageLine = stats
+    ? `${stats.continuesSource === "exact" ? "Continues" : "Continues~"}: ${stats.continues} | ${stats.chatsSource === "exact" ? "Chats" : "Chats~"}: ${stats.chatMessages}`
+    : "Continues: 0 | Chats: 0";
+  const rateLimitLine = `Rate limit: ${resolveSessionRateLimitText(session)}`;
+
+  return [
+    `${session?.agentId || "Agent"} (${session?.status || "unknown"})`,
+    modelLine,
+    contextLine,
+    usageLine,
+    rateLimitLine,
+    repoLine,
+    workspaceLine,
+    activityLine
+  ].join("\n");
+}
+
 function sessionIsRunning(session) {
   if (!session) {
     return false;
@@ -784,105 +1099,108 @@ function autoResizeComposerInput() {
 }
 
 function createSessionCard(session) {
-  const card = document.createElement("section");
-  card.className = "card session-card";
-  if (state.selected?.kind === "session" && state.selected.id === session.sessionId) card.classList.add("selected");
+  const cls = classifySession(session);
   const collapsed = Boolean(state.sessionCollapse[session.sessionId]);
 
-  const top = document.createElement("div");
-  top.className = "session-head";
-  const title = document.createElement("div");
-  title.className = "title";
-  title.textContent = `${session.agentId} (${session.transport})`;
-  top.appendChild(title);
+  const row = document.createElement("div");
+  row.className = `session-row session-row--${cls}`;
+  row.title = buildSessionHoverTitle(session);
+  if (state.selected?.kind === "session" && state.selected.id === session.sessionId) row.classList.add("selected");
+  if (session.pinned) row.classList.add("session-row--pinned");
 
+  // Header: dot + name + transport badge + hover actions
+  const header = document.createElement("div");
+  header.className = "session-row-header";
+
+  const dot = document.createElement("span");
+  dot.className = "session-status-dot";
+  dot.title = cls;
+  header.appendChild(dot);
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "session-row-title";
+  const nameSpan = document.createElement("span");
+  nameSpan.className = "session-row-name";
+  nameSpan.textContent = session.agentId;
+  titleWrap.appendChild(nameSpan);
+  const badge = document.createElement("span");
+  badge.className = "session-transport-badge";
+  badge.textContent = session.transport;
+  titleWrap.appendChild(badge);
+  header.appendChild(titleWrap);
+
+  // Compact action buttons (visible on hover / selection)
   const actions = document.createElement("div");
-  actions.className = "inline-actions";
-  const toggle = document.createElement("button");
-  toggle.className = "lane-action";
-  toggle.type = "button";
-  toggle.textContent = collapsed ? "Expand" : "Collapse";
-  toggle.onclick = (event) => {
-    event.stopPropagation();
-    state.sessionCollapse[session.sessionId] = !collapsed;
-    renderSessions();
-  };
-  actions.appendChild(toggle);
+  actions.className = "session-row-actions";
+
   const pin = document.createElement("button");
-  pin.className = "lane-action";
+  pin.className = "session-row-btn";
   pin.type = "button";
   pin.textContent = session.pinned ? "Unpin" : "Pin";
-  pin.onclick = (event) => {
-    event.stopPropagation();
-    vscode.postMessage({ type: "sessionPin", sessionId: session.sessionId, pinned: !session.pinned });
-  };
+  pin.title = session.pinned ? "Unpin session" : "Pin session";
+  pin.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "sessionPin", sessionId: session.sessionId, pinned: !session.pinned }); };
   actions.appendChild(pin);
+
   const archive = document.createElement("button");
-  archive.className = "lane-action";
+  archive.className = "session-row-btn";
   archive.type = "button";
   archive.textContent = session.archived ? "Restore" : "Archive";
-  archive.onclick = (event) => {
-    event.stopPropagation();
-    vscode.postMessage({ type: session.archived ? "sessionRestore" : "sessionArchive", sessionId: session.sessionId });
-  };
+  archive.title = session.archived ? "Restore session" : "Archive session";
+  archive.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: session.archived ? "sessionRestore" : "sessionArchive", sessionId: session.sessionId }); };
   actions.appendChild(archive);
+
   const openEditor = document.createElement("button");
-  openEditor.className = "lane-action";
+  openEditor.className = "session-row-btn session-row-btn--primary";
   openEditor.type = "button";
-  openEditor.textContent = "Open Editor";
-  openEditor.onclick = (event) => {
-    event.stopPropagation();
-    vscode.postMessage({ type: "openSessionEditor", sessionId: session.sessionId });
-  };
+  openEditor.textContent = "Open";
+  openEditor.title = "Open in editor";
+  openEditor.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "openSessionEditor", sessionId: session.sessionId }); };
   actions.appendChild(openEditor);
-  top.appendChild(actions);
-  card.appendChild(top);
 
+  header.appendChild(actions);
+  row.appendChild(header);
+
+  // Status meta line
   const meta = document.createElement("div");
-  meta.className = "meta-line";
-  meta.textContent = `${session.status} | heartbeat ${formatAge(session.lastHeartbeat)} | ${session.summary || ""}`;
-  card.appendChild(meta);
+  meta.className = "session-row-meta";
+  const metaParts = [session.status, `heartbeat ${formatAge(session.lastHeartbeat)}`];
+  if (session.summary) metaParts.push(session.summary);
+  meta.textContent = metaParts.join(" · ");
+  row.appendChild(meta);
 
+  // Expanded detail (repo / workspace)
   if (!collapsed) {
-    const scope = document.createElement("div");
-    scope.className = "meta-line secondary";
-    scope.textContent = `Repo: ${session.repository || "(none)"} | Branch: ${session.branch || "(none)"}`;
-    card.appendChild(scope);
-    const workspace = document.createElement("div");
-    workspace.className = "meta-line secondary";
-    workspace.textContent = `Workspace: ${session.workspace || "(none)"} | Updated: ${formatTime(session.updatedAt)}`;
-    card.appendChild(workspace);
-  } else {
-    card.appendChild(emptyText("Collapsed"));
+    const detail = document.createElement("div");
+    detail.className = "session-row-detail";
+    const repo = session.repository || "(none)";
+    const branch = session.branch || "(none)";
+    const ws = session.workspace ? session.workspace.replace(/.*[\\/]/, "") : "(none)";
+    detail.textContent = `${repo} / ${branch} · ${ws} · ${formatTime(session.updatedAt)}`;
+    row.appendChild(detail);
   }
 
-  card.onclick = () => {
-    if (state.sessionLockId) {
-      return;
-    }
+  row.onclick = (e) => {
+    if (state.sessionLockId || e.target.closest(".session-row-actions")) return;
     state.selected = { kind: "session", id: session.sessionId };
+    state.sessionCollapse[session.sessionId] = !collapsed;
     render();
   };
-  return card;
+  return row;
 }
 
 function renderSessionBucket(root, heading, sessions) {
-  const lane = document.createElement("section");
-  lane.className = "lane";
+  if (!sessions.length) return;
+  const bucket = document.createElement("div");
+  bucket.className = "session-bucket";
   const title = document.createElement("div");
-  title.className = "lane-title";
+  title.className = "session-bucket-heading";
   title.textContent = `${heading} (${sessions.length})`;
-  lane.appendChild(title);
-  if (!sessions.length) {
-    lane.appendChild(emptyText("No sessions"));
-    root.appendChild(lane);
-    return;
-  }
-  const cards = document.createElement("div");
-  cards.className = "lane-cards";
-  sessions.forEach((session) => cards.appendChild(createSessionCard(session)));
-  lane.appendChild(cards);
-  root.appendChild(lane);
+  bucket.appendChild(title);
+  const list = document.createElement("div");
+  list.className = "session-list";
+  sessions.forEach((session) => list.appendChild(createSessionCard(session)));
+  bucket.appendChild(list);
+  root.appendChild(bucket);
 }
 
 function renderSessions() {
@@ -954,50 +1272,13 @@ function textLine(text, className = "meta-line") {
   return div;
 }
 
-function renderFeed() {
-  const root = byId("agentFeed");
-  root.innerHTML = "";
-  const entries = [...(state.snapshot?.agents?.feed || [])]
-    .filter((entry) => !isJarvisFeedEntry(entry))
-    .sort((a, b) => (parseMs(b.occurredAt) || 0) - (parseMs(a.occurredAt) || 0));
-  const selected = selectedSession();
-  const stats = computeSessionStats(selected);
-  const statsLine = document.createElement("div");
-  statsLine.className = "feed-inline";
-  statsLine.textContent = selected
-    ? `Session stats: ${formatSessionStats(stats)}`
-    : "Select a session to view per-session chat/context stats.";
-  root.appendChild(statsLine);
-  const visible = selected ? entries.filter((entry) => entry.sessionId === selected.sessionId) : entries;
-  if (!visible.length) {
-    root.appendChild(emptyText(selected ? "No feed for selected session." : "No feed entries."));
-    return;
-  }
-  visible.slice(0, 80).forEach((entry) => {
-    const row = document.createElement("div");
-    row.className = `feed-row ${entry.level || "info"}`;
-    row.appendChild(textLine(`${formatTime(entry.occurredAt)} | ${entry.transport} | ${entry.agentId}`));
-    row.appendChild(textLine(entry.message, "feed-text"));
-    root.appendChild(row);
-  });
-}
-
 function renderJarvisSupervisorSection() {
   const jarvisSection = byId("agentJarvisSection");
   const jarvisMeta = byId("jarvisSectionMeta");
-  const jarvisFeedRoot = byId("jarvisFeed");
 
   if (jarvisSection instanceof HTMLDetailsElement) {
     jarvisSection.open = state.ui.jarvisSectionOpen;
   }
-
-  const dedicatedJarvisFeed = Array.isArray(state.snapshot?.jarvis?.feed)
-    ? state.snapshot.jarvis.feed
-    : [];
-  const fallbackJarvisFeed = (state.snapshot?.agents?.feed || []).filter((entry) => isJarvisFeedEntry(entry));
-  const jarvisFeed = (dedicatedJarvisFeed.length ? dedicatedJarvisFeed : fallbackJarvisFeed)
-    .slice()
-    .sort((a, b) => (parseMs(b.occurredAt) || 0) - (parseMs(a.occurredAt) || 0));
 
   if (jarvisMeta) {
     const mode = !state.jarvis.enabled
@@ -1006,27 +1287,15 @@ function renderJarvisSupervisorSection() {
     const apiHealth = state.jarvis.chatDegraded || state.jarvis.speechDegraded
       ? "API degraded"
       : "API healthy";
-    jarvisMeta.textContent = `Mode: ${mode} | ${apiHealth} | Feed ${jarvisFeed.length}`;
+    const reason = state.jarvis.lastReason ? `Reason: ${state.jarvis.lastReason}` : "";
+    const focus = state.jarvis.focusLabel ? `Focus: ${state.jarvis.focusLabel}` : "";
+    jarvisMeta.textContent = [
+      `Mode: ${mode}`,
+      apiHealth,
+      reason,
+      focus
+    ].filter((part) => part.length > 0).join(" | ");
   }
-
-  if (!jarvisFeedRoot) {
-    return;
-  }
-
-  jarvisFeedRoot.innerHTML = "";
-  if (!jarvisFeed.length) {
-    jarvisFeedRoot.appendChild(emptyText("No Jarvis supervisor events."));
-    return;
-  }
-
-  jarvisFeed.slice(0, 60).forEach((entry) => {
-    const row = document.createElement("div");
-    row.className = `feed-row ${entry.level || "info"}`;
-    const source = String(entry.agentId || entry.service || "jarvis").trim() || "jarvis";
-    row.appendChild(textLine(`${formatTime(entry.occurredAt)} | ${source}`));
-    row.appendChild(textLine(String(entry.message || ""), "feed-text"));
-    jarvisFeedRoot.appendChild(row);
-  });
 }
 
 function renderDetail() {
@@ -1135,7 +1404,8 @@ function renderControlMeta() {
   const stats = computeSessionStats(session);
   const codexMeta = formatCliAuthMeta("Codex", state.auth?.codex);
   const copilotMeta = formatCliAuthMeta("Copilot", state.auth?.copilot);
-  const authMeta = `${codexMeta} | ${copilotMeta}`;
+  const geminiMeta = formatCliAuthMeta("Gemini", state.auth?.gemini);
+  const authMeta = `${codexMeta} | ${copilotMeta} | ${geminiMeta}`;
   if (meta) {
     meta.textContent = session
       ? `Selected: ${session.agentId} (${session.sessionId}) | ${session.transport} | ${session.status} | Continues ${stats?.continues ?? 0} | Chats ${stats?.chatMessages ?? 0} | ${authMeta}`

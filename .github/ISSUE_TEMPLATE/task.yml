@@ -1,0 +1,188 @@
+name: Task
+description: Create a well-structured task that agents and CI can parse into project board fields automatically.
+title: "[Task]: "
+labels:
+  - task
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Task definition
+
+        Fill in ALL required fields. When this issue is created, CI will validate the
+        fields and auto-populate the project board (Priority, Size, Area, Work mode,
+        Status).
+
+        **Agents**: Use the `create-issue` skill for guidance, or fill this template
+        directly via `mcp_github_github_issue_write`.
+
+  # ── Execution context ────────────────────────────────────────────
+  - type: dropdown
+    id: repo
+    attributes:
+      label: Target repository
+      description: The repo where this work will be done.
+      options:
+        - Phoenix-Agentic-Engine
+        - Phoenix-Agentic-Engine-Backend
+        - Phoenix-Agentic-Engine-Interface
+        - Phoenix-Agentic-Website-Frontend
+        - Phoenix-Agentic-Website-Backend
+        - Phoenix-Agentic-Workspace-Supervisor
+        - Phoenix-Agentic-VSCode-CommandCenter
+    validations:
+      required: true
+
+  - type: input
+    id: parent_branch
+    attributes:
+      label: Parent branch (PR target)
+      description: The branch this task's PR will merge INTO. Usually a `feature/*` branch, or `main`.
+      placeholder: "feature/phase-3-mcp-client"
+    validations:
+      required: true
+
+  - type: input
+    id: working_branch
+    attributes:
+      label: Working branch
+      description: The branch created for this task. Must follow naming convention.
+      placeholder: "subfeature/task/mcp-client-core"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: work_mode
+    attributes:
+      label: Work mode
+      description: How this task will be executed.
+      options:
+        - Local IDE
+        - CLI Agent
+        - Cloud Agent
+    validations:
+      required: true
+
+  - type: dropdown
+    id: separate_worktree
+    attributes:
+      label: Separate worktree?
+      description: Will the agent work in a separate git worktree? (Yes for CLI agents, No for Local IDE, N/A for Cloud)
+      options:
+        - "No"
+        - "Yes"
+        - "N/A (Cloud Agent)"
+    validations:
+      required: true
+
+  # ── Board fields ─────────────────────────────────────────────────
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - P0 — Critical / blocker
+        - P1 — High
+        - P2 — Medium
+        - P3 — Low
+    validations:
+      required: true
+
+  - type: dropdown
+    id: size
+    attributes:
+      label: Size
+      options:
+        - XS — Extra small (< 1 hour)
+        - S — Small (1-4 hours)
+        - M — Medium (half day to full day)
+        - L — Large (multi-day)
+        - XL — Extra large (multi-week)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: The codebase area this task touches. Only one active task per area is allowed.
+      options:
+        - module/assistant-ui
+        - module/mcp
+        - module/agent
+        - module/addons
+        - core
+        - gateway
+        - worker
+        - orchestrator
+        - sdk/client
+        - sdk/core
+        - contracts
+        - infra
+        - app/pages
+        - components
+        - content
+        - public
+        - api
+        - domain
+        - tests
+        - docs
+        - ci
+    validations:
+      required: true
+
+  # ── Task description ─────────────────────────────────────────────
+  - type: textarea
+    id: description
+    attributes:
+      label: Task description
+      description: What needs to be done? Be specific enough that an agent can start working with no additional context.
+      placeholder: |
+        Implement ...
+        
+        Context: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance criteria
+      description: Checkboxes that must pass for this task to be considered complete.
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+        - [ ] All tests pass
+        - [ ] No lint errors
+    validations:
+      required: true
+
+  - type: textarea
+    id: key_files
+    attributes:
+      label: Key files
+      description: Files or directories this task will primarily touch.
+      placeholder: |
+        - src/module/file.ts
+        - tests/module/file.test.ts
+    validations:
+      required: false
+
+  - type: input
+    id: depends_on
+    attributes:
+      label: Depends on
+      description: Issue numbers that must be Done before this task can start. Leave blank if none.
+      placeholder: "#42, #57"
+    validations:
+      required: false
+
+  - type: input
+    id: lock_key
+    attributes:
+      label: Lock key
+      description: Fine-grained file-level lock identifier. Leave blank if Area is sufficient.
+      placeholder: "gateway/auth/*"
+    validations:
+      required: false

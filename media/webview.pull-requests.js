@@ -10,98 +10,116 @@ function pullRequestBuckets() {
 function renderPullRequestColumn(targetId, bucketKey, heading, pullRequests) {
   const root = byId(targetId);
   root.innerHTML = "";
-  const lane = document.createElement("section");
-  lane.className = "lane";
   const collapsed = Boolean(state.pullRequestBucketCollapse[bucketKey]);
 
-  const header = document.createElement("div");
-  header.className = "lane-header";
-  const left = document.createElement("div");
-  left.className = "lane-title-wrap";
+  const bucket = document.createElement("div");
+  bucket.className = "ops-bucket";
+
+  const headingEl = document.createElement("div");
+  headingEl.className = "ops-bucket-heading";
+
   const toggle = document.createElement("button");
-  toggle.className = "lane-toggle";
+  toggle.className = "ops-bucket-heading-toggle";
   toggle.type = "button";
-  toggle.textContent = collapsed ? ">" : "v";
+  toggle.textContent = collapsed ? "›" : "⌄";
+  toggle.title = collapsed ? "Expand" : "Collapse";
   toggle.onclick = () => {
     state.pullRequestBucketCollapse[bucketKey] = !collapsed;
     renderPullRequests();
   };
-  left.appendChild(toggle);
+  headingEl.appendChild(toggle);
 
-  const title = document.createElement("div");
-  title.className = "lane-title";
-  title.textContent = `${heading} (${pullRequests.length})`;
-  left.appendChild(title);
-  header.appendChild(left);
-  lane.appendChild(header);
+  const headText = document.createElement("span");
+  headText.textContent = `${heading} (${pullRequests.length})`;
+  headingEl.appendChild(headText);
+  bucket.appendChild(headingEl);
 
   if (!pullRequests.length) {
-    lane.appendChild(emptyText("No pull requests"));
-    root.appendChild(lane);
+    bucket.appendChild(emptyText("No pull requests"));
+    root.appendChild(bucket);
     return;
   }
 
   if (collapsed) {
-    lane.appendChild(emptyText("Collapsed"));
-    root.appendChild(lane);
+    root.appendChild(bucket);
     return;
   }
 
-  const cards = document.createElement("div");
-  cards.className = "lane-cards";
+  const list = document.createElement("div");
+  list.className = "ops-item-list";
   pullRequests.slice(0, 40).forEach((entry) => {
-    const card = document.createElement("section");
-    card.className = "card action-card";
+    const row = document.createElement("div");
+    row.className = "ops-item-row";
     if (state.selected?.kind === "pullRequest" && state.selected.id === entry.id) {
-      card.classList.add("selected");
+      row.classList.add("selected");
     }
-
-    const head = document.createElement("div");
-    head.className = "session-head";
-    const text = document.createElement("div");
-    text.className = "title";
-    text.textContent = `#${entry.number} ${entry.title}`;
-    head.appendChild(text);
-
-    const controls = document.createElement("div");
-    controls.className = "inline-actions";
-
-    const details = document.createElement("button");
-    details.className = "lane-action";
-    details.type = "button";
-    details.textContent = "Details";
-    details.onclick = () => {
+    row.onclick = (e) => {
+      if (e.target.closest(".ops-item-actions")) return;
       state.selected = { kind: "pullRequest", id: entry.id };
       requestPullRequestInsights(entry, false);
       renderPullRequestInsights();
       renderPullRequestCommentPanel();
     };
-    controls.appendChild(details);
+
+    const rowHeader = document.createElement("div");
+    rowHeader.className = "ops-item-header";
+
+    const dot = document.createElement("span");
+    dot.className = `ops-item-dot ${opsDotClassForPRReviewState(entry.reviewState)}`;
+    rowHeader.appendChild(dot);
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "ops-item-title-wrap";
+    const name = document.createElement("span");
+    name.className = "ops-item-name";
+    name.textContent = `#${entry.number} ${entry.title}`;
+    titleWrap.appendChild(name);
+    const badge = document.createElement("span");
+    badge.className = "ops-item-badge";
+    badge.textContent = entry.repo;
+    titleWrap.appendChild(badge);
+    rowHeader.appendChild(titleWrap);
+
+    const actions = document.createElement("div");
+    actions.className = "ops-item-actions";
+
+    const details = document.createElement("button");
+    details.className = "ops-item-btn";
+    details.type = "button";
+    details.textContent = "Details";
+    details.onclick = (e) => {
+      e.stopPropagation();
+      state.selected = { kind: "pullRequest", id: entry.id };
+      requestPullRequestInsights(entry, false);
+      renderPullRequestInsights();
+      renderPullRequestCommentPanel();
+    };
+    actions.appendChild(details);
 
     const open = document.createElement("button");
-    open.className = "lane-action";
+    open.className = "ops-item-btn ops-item-btn--primary";
     open.type = "button";
     open.textContent = "Open";
-    open.onclick = () => vscode.postMessage({ type: "openPullRequest", url: entry.url });
-    controls.appendChild(open);
+    open.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "openPullRequest", url: entry.url }); };
+    actions.appendChild(open);
 
-    head.appendChild(controls);
-    card.appendChild(head);
+    rowHeader.appendChild(actions);
+    row.appendChild(rowHeader);
 
     const meta = document.createElement("div");
-    meta.className = "meta-line";
-    meta.textContent = `${entry.repo} | ${entry.headBranch || "(head)"} -> ${entry.baseBranch || "(base)"} | ${entry.reviewState}`;
-    card.appendChild(meta);
-    const sub = document.createElement("div");
-    sub.className = "meta-line secondary";
-    sub.textContent = `${entry.isDraft ? "Draft | " : ""}Updated ${formatAge(entry.updatedAt)} | Author ${entry.author || "(unknown)"}`;
-    card.appendChild(sub);
+    meta.className = "ops-item-meta";
+    meta.textContent = `${entry.headBranch || "(head)"} → ${entry.baseBranch || "(base)"} · ${entry.reviewState}`;
+    row.appendChild(meta);
 
-    cards.appendChild(card);
+    const detail = document.createElement("div");
+    detail.className = "ops-item-detail";
+    detail.textContent = `${entry.isDraft ? "Draft · " : ""}${formatAge(entry.updatedAt)} · ${entry.author || "(unknown)"}`;
+    row.appendChild(detail);
+
+    list.appendChild(row);
   });
-
-  lane.appendChild(cards);
-  root.appendChild(lane);
+  bucket.appendChild(list);
+  root.appendChild(bucket);
 }
 
 function renderPullRequests() {
