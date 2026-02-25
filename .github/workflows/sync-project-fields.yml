@@ -31,10 +31,10 @@ on:
           - create-signal-labels
 
 env:
-  PROJECT_NUMBER: 3
+  PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER || 3 }}
 
 jobs:
-  # ── Bootstrap: create or delete all signal labels ──────────────────
+  # ── Bootstrap: create all signal labels ─────────────────────────────
   manage-signal-labels:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -186,7 +186,6 @@ jobs:
                 },
               },
               area: {
-                optional: true,
                 fieldNames: ['Area'],
                 options: {
                   'extension':  /\bextension\b/i,
@@ -242,26 +241,9 @@ jobs:
               return;
             }
 
-            if (fieldKey === 'workmode' && canonicalOptionKey === 'cloud-agent') {
-              const labels = (context.payload.issue.labels || [])
-                .map((entry) => typeof entry === 'string' ? entry : entry.name)
-                .filter(Boolean);
-
-              if (!labels.includes('cloud-agent')) {
-                await github.rest.issues.addLabels({
-                  owner,
-                  repo,
-                  issue_number: issueNumber,
-                  labels: ['cloud-agent'],
-                });
-                core.info(`Added real label "cloud-agent" to issue #${issueNumber}`);
-              } else {
-                core.info(`Issue #${issueNumber} already has label "cloud-agent"`);
-              }
-
-              await removeSignalLabel();
-              return;
-            }
+            // Note: set:workmode:cloud-agent does NOT auto-add the cloud-agent label.
+            // That label must be added manually by a human to correctly trigger the
+            // permission-guarded cloud-agent-assign workflow.
 
             if (fieldKey === 'workmode' && canonicalOptionKey === 'local-ide') {
               try {
@@ -430,6 +412,20 @@ jobs:
                 's': 'S',
                 'm': 'M',
                 'l': 'L',
+                'extension': 'extension',
+                'controller': 'controller',
+                'webview': 'webview',
+                'services': 'services',
+                'utils': 'utils',
+                'jarvis': 'jarvis',
+                'supervisor': 'supervisor',
+                'agent': 'agent',
+                'board': 'board',
+                'actions': 'actions',
+                'prs': 'prs',
+                'tests': 'tests',
+                'docs': 'docs',
+                'ci': 'ci',
               };
 
               const textValue = textByOption[canonicalOptionKey];

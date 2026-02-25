@@ -19,7 +19,7 @@ on:
     types: [labeled]
 
 env:
-  PROJECT_NUMBER: 3
+  PROJECT_NUMBER: ${{ vars.CLOUD_AGENT_PROJECT_NUMBER || 3 }}
 
 jobs:
   assign-copilot:
@@ -192,7 +192,7 @@ jobs:
               owner,
               repo,
               issue_number,
-              body: `⛔ Cloud-agent assignment blocked.\n\n${reason}\n\n**Required steps:**\n1. Ensure the issue is on the [project board](https://github.com/users/rivie13/projects/3)\n2. Move the issue to **Ready** status\n3. Re-add the \`cloud-agent\` label`,
+              body: `⛔ Cloud-agent assignment blocked.\n\n${reason}\n\n**Required steps:**\n1. Ensure the issue is on the [project board](https://github.com/users/${context.repo.owner}/projects/${process.env.PROJECT_NUMBER})\n2. Move the issue to **Ready** status\n3. Re-add the \`cloud-agent\` label`,
             });
 
       # ── 3. Assign Copilot & update board status ─────────────────────
@@ -331,7 +331,7 @@ jobs:
                   base_branch: resolvedBaseBranch,
                   custom_instructions: '',
                   custom_agent: '',
-                  model: 'gpt-5.3-codex',
+                  model: 'gpt-4o',
                 },
                 headers: {
                   Accept: 'application/vnd.github+json',
