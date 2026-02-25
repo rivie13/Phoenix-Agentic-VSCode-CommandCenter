@@ -8,7 +8,7 @@ description: Build, test, lint, and validate the Phoenix Command Center VS Code 
 ## Quick reference
 
 | Task | Command |
-|------|---------|
+|------|----------|
 | Install deps | `npm install` |
 | Type-check only | `npm run lint` |
 | Run tests | `npm run test` |
@@ -24,6 +24,10 @@ description: Build, test, lint, and validate the Phoenix Command Center VS Code 
 2. If only checking types: `npm run lint`
 3. If only running tests: `npm run test`
 4. For continuous development: `npm run watch` in background
+
+## CI pipeline
+
+GitHub Actions CI (`.github/workflows/ci.yml`) enforces the same quality gate automatically on every push to `main` and all pull requests. CI is a merge gate — PRs with failing checks must not be merged.
 
 ## Test details
 

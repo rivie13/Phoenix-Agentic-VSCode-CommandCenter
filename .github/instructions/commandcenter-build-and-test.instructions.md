@@ -48,6 +48,16 @@ npm run verify       # lint + test + compile
 
 **Run `npm run verify` before every PR and commit.**
 
+## CI pipeline
+
+GitHub Actions CI (`.github/workflows/ci.yml`) runs the same quality gate automatically:
+
+- **Trigger**: push to `main` and all pull requests
+- **Steps**: checkout → Node.js 20 setup with npm cache → `npm ci` → `npm run lint` → `npm run test` → `npm run compile`
+- **Concurrency**: duplicate runs on the same branch are cancelled automatically
+
+CI is a merge gate — PRs with failing checks must not be merged.
+
 ## Package VSIX
 
 ```bash
@@ -65,7 +75,7 @@ code --install-extension phoenix-vscode-command-center-0.1.0.vsix --force
 ## VS Code Tasks
 
 | Task | Purpose |
-|------|---------|
+|------|----------|
 | `Command Center: Install` | `npm install` |
 | `Command Center: Compile` | `npm run compile` |
 | `Command Center: Watch` | `npm run watch` (background) |

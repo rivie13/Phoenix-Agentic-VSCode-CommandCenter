@@ -63,6 +63,15 @@ Run `npm run verify` before every PR push. All three steps must pass:
 2. `npm run test` — vitest
 3. `npm run compile` — build
 
+### CI checks
+
+- After creating/updating PR:
+  - Check GitHub Actions/workflow run status for the PR
+  - If any workflow/job fails, fetch logs and fix the root cause
+  - Re-run validations locally and re-trigger/recheck workflow runs
+  - Do not mark PR ready while required checks are failing
+- PR GitHub Actions checks are green (or explicitly understood/waived)
+
 ### PR size
 
 - Target ≤ 400 added/modified lines per PR
