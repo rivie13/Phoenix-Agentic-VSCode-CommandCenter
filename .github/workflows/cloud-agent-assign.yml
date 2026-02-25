@@ -19,7 +19,7 @@ on:
     types: [labeled]
 
 env:
-  PROJECT_NUMBER: ${{ vars.CLOUD_AGENT_PROJECT_NUMBER || 3 }}
+  PROJECT_NUMBER: ${{ vars.CLOUD_AGENT_PROJECT_NUMBER || '3' }}
 
 jobs:
   assign-copilot:
@@ -122,7 +122,6 @@ jobs:
             const projectNumber = Number(process.env.PROJECT_NUMBER);
             const issueNumber = context.payload.issue.number;
 
-            // Fetch this issue's project-board item and its Status value
             const query = `
               query($owner: String!, $repo: String!, $issueNumber: Int!) {
                 repository(owner: $owner, name: $repo) {
@@ -192,7 +191,7 @@ jobs:
               owner,
               repo,
               issue_number,
-              body: `⛔ Cloud-agent assignment blocked.\n\n${reason}\n\n**Required steps:**\n1. Ensure the issue is on the [project board](https://github.com/users/${context.repo.owner}/projects/${process.env.PROJECT_NUMBER})\n2. Move the issue to **Ready** status\n3. Re-add the \`cloud-agent\` label`,
+              body: `⛔ Cloud-agent assignment blocked.\n\n${reason}\n\n**Required steps:**\n1. Ensure the issue is on the [project board](https://github.com/users/${owner}/projects/${process.env.PROJECT_NUMBER})\n2. Move the issue to **Ready** status\n3. Re-add the \`cloud-agent\` label`,
             });
 
       # ── 3. Assign Copilot & update board status ─────────────────────
@@ -208,7 +207,6 @@ jobs:
             const projectId = '${{ steps.board.outputs.projectId }}';
             const itemId = '${{ steps.board.outputs.itemId }}';
 
-            // Assign Copilot coding agent to the issue
             const defaultBranch = context.payload.repository?.default_branch || 'main';
             const issueBody = context.payload.issue?.body || '';
             const issueLabels = (context.payload.issue?.labels || [])
@@ -331,7 +329,7 @@ jobs:
                   base_branch: resolvedBaseBranch,
                   custom_instructions: '',
                   custom_agent: '',
-                  model: 'gpt-4o',
+                  model: 'gpt-5.3-codex',
                 },
                 headers: {
                   Accept: 'application/vnd.github+json',
@@ -350,7 +348,6 @@ jobs:
               throw new Error('Copilot coding agent assignment was not applied by the API response.');
             }
 
-            // Fetch project field definitions (Status + Work mode)
             const fieldQuery = `
               query($projectId: ID!) {
                 node(id: $projectId) {
@@ -402,7 +399,6 @@ jobs:
 
             const updates = [];
 
-            // Update Status → "In Progress"
             const statusField = fields.find(f => f.name === 'Status');
             if (statusField) {
               const inProgress = statusField.options.find(o => o.name === 'In Progress');
@@ -416,7 +412,6 @@ jobs:
               }
             }
 
-            // Update Work mode → "Cloud Agent"
             const workModeField = fields.find((field) =>
               ['work mode', 'work Mode', 'workmode'].includes((field.name || '').toLowerCase())
             );

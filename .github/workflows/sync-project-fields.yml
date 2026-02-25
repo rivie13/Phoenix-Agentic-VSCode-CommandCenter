@@ -31,7 +31,7 @@ on:
           - create-signal-labels
 
 env:
-  PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER || 3 }}
+  PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER || '3' }}
 
 jobs:
   # ── Bootstrap: create all signal labels ─────────────────────────────
@@ -241,9 +241,12 @@ jobs:
               return;
             }
 
-            // Note: set:workmode:cloud-agent does NOT auto-add the cloud-agent label.
-            // That label must be added manually by a human to correctly trigger the
-            // permission-guarded cloud-agent-assign workflow.
+            // ── Workmode side-effects: manage cloud-agent label ─────
+            // Note: set:workmode:cloud-agent only updates the board field.
+            // The privileged `cloud-agent` label must be added directly by
+            // an authorized user — this workflow intentionally does NOT
+            // auto-add it, to preserve the permission guard in
+            // cloud-agent-assign.yml.
 
             if (fieldKey === 'workmode' && canonicalOptionKey === 'local-ide') {
               try {
@@ -412,20 +415,20 @@ jobs:
                 's': 'S',
                 'm': 'M',
                 'l': 'L',
-                'extension': 'extension',
-                'controller': 'controller',
-                'webview': 'webview',
-                'services': 'services',
-                'utils': 'utils',
-                'jarvis': 'jarvis',
-                'supervisor': 'supervisor',
-                'agent': 'agent',
-                'board': 'board',
-                'actions': 'actions',
-                'prs': 'prs',
-                'tests': 'tests',
-                'docs': 'docs',
-                'ci': 'ci',
+                'extension': 'Extension',
+                'controller': 'Controller',
+                'webview': 'Webview',
+                'services': 'Services',
+                'utils': 'Utils',
+                'jarvis': 'Jarvis',
+                'supervisor': 'Supervisor',
+                'agent': 'Agent',
+                'board': 'Board',
+                'actions': 'Actions',
+                'prs': 'PRs',
+                'tests': 'Tests',
+                'docs': 'Docs',
+                'ci': 'CI',
               };
 
               const textValue = textByOption[canonicalOptionKey];
