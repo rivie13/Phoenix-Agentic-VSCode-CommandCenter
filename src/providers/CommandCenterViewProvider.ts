@@ -83,6 +83,7 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
     const scriptUris = [
       webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "node_modules", "@xterm", "xterm", "lib", "xterm.js")),
       webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "node_modules", "@xterm", "addon-fit", "lib", "addon-fit.js")),
+      webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "node_modules", "@xterm", "addon-canvas", "lib", "addon-canvas.js")),
       "webview.js",
       "webview.issue-forms.js",
       "webview.actions.js",
@@ -109,7 +110,7 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; media-src ${webview.cspSource} data: blob:;" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; media-src ${webview.cspSource} data: blob:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="${xtermCssUri}" />
   <link rel="stylesheet" href="${cssUri}" />

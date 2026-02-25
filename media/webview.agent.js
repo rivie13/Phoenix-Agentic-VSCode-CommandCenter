@@ -97,6 +97,13 @@ function resolveFitAddonConstructor() {
   return null;
 }
 
+function resolveCanvasAddonConstructor() {
+  if (window.CanvasAddon && typeof window.CanvasAddon.CanvasAddon === "function") {
+    return window.CanvasAddon.CanvasAddon;
+  }
+  return null;
+}
+
 function resolveCssVariable(name, fallback) {
   const style = window.getComputedStyle(document.documentElement);
   const value = style.getPropertyValue(name);
@@ -423,6 +430,18 @@ function ensureTerminalInstance(sessionId, mount) {
   // keyboard event capture and prevents proper initial sizing.
   wrapper.style.display = "block";
   terminal.open(wrapper);
+
+  // Load canvas addon AFTER open() — it replaces the DOM renderer with a
+  // hardware-accelerated canvas, which needs the terminal attached to the DOM.
+  const CanvasAddonCtor = resolveCanvasAddonConstructor();
+  if (CanvasAddonCtor && typeof terminal.loadAddon === "function") {
+    try {
+      terminal.loadAddon(new CanvasAddonCtor());
+    } catch {
+      // Canvas addon failed — DOM renderer fallback is fine.
+    }
+  }
+
   wrapper.style.display = "none";
   const focusListener = () => {
     state.terminal.attachedSessionId = sessionId;
