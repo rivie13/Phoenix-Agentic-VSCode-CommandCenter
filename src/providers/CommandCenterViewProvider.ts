@@ -111,8 +111,8 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}'; media-src ${webview.cspSource} data: blob:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="stylesheet" href="${cssUri}" />
   <link rel="stylesheet" href="${xtermCssUri}" />
+  <link rel="stylesheet" href="${cssUri}" />
   <title>Phoenix Command Center</title>
 </head>
 <body class="${bodyClass}">
@@ -536,19 +536,11 @@ export class CommandCenterViewProvider implements vscode.WebviewViewProvider {
           <span id="sessionCounts" class="meta-line"></span>
         </summary>
         <div class="foldout-body">
-          <div class="board-toolbar">
-            <div class="inline-actions">
-              <button id="collapseAllSessions">Collapse All</button>
-              <button id="expandAllSessions">Expand All</button>
-            </div>
-            <label class="toggle-label">
-              <input id="showArchivedSessions" type="checkbox" />
-              Show archived
-            </label>
-            <label class="toggle-label">
-              <input id="showOlderSessions" type="checkbox" />
-              Show older than 24h
-            </label>
+          <div class="sessions-toolbar">
+            <button id="collapseAllSessions" class="sessions-text-btn">Collapse All</button>
+            <button id="expandAllSessions" class="sessions-text-btn">Expand All</button>
+            <label class="toggle-label"><input id="showArchivedSessions" type="checkbox" /> Show archived</label>
+            <label class="toggle-label"><input id="showOlderSessions" type="checkbox" /> Show older than 24h</label>
           </div>
           <div id="agentSessions" class="agent-sessions"></div>
           <section class="panel nested-panel" style="margin-top: 10px;">

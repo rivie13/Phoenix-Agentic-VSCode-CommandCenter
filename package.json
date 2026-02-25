@@ -361,7 +361,7 @@
         },
         "phoenixOps.geminiCliPath": {
           "type": "string",
-          "default": "gemini",
+          "default": "npx -y @google/gemini-cli",
           "description": "Path or command name used by supervisor for Gemini CLI launches."
         },
         "phoenixOps.cliBootstrapOnStartup": {

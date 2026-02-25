@@ -95,7 +95,10 @@ export async function runAuthCommandFromSetting(
   }
 
   const terminalName = `Phoenix Ops: ${label} Sign-In`;
-  const terminal = vscode.window.createTerminal({ name: terminalName });
+  const terminal = vscode.window.createTerminal({
+    name: terminalName,
+    isTransient: true
+  });
   terminal.show(true);
   terminal.sendText(command, true);
   vscode.window.showInformationMessage(`${label} sign-in command sent to terminal.`);

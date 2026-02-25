@@ -10,7 +10,8 @@ export class SupervisorTerminalClient {
     sessionId: string,
     onPayload: (payload: AgentTerminalStreamPayload) => void,
     onError: (error: unknown) => void,
-    onClose?: () => void
+    onClose?: () => void,
+    onOpen?: () => void
   ): void {
     this.dispose();
 
@@ -24,6 +25,10 @@ export class SupervisorTerminalClient {
         return;
       }
       onPayload(payload);
+    });
+
+    socket.on("open", () => {
+      onOpen?.();
     });
 
     socket.on("error", (event: Error) => {

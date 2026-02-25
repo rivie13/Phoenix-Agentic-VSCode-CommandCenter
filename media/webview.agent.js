@@ -127,6 +127,43 @@ function resolveTerminalFontFamily() {
   return resolveCssVariable("--vscode-editor-font-family", "Consolas, 'Courier New', monospace");
 }
 
+function resolveCssNumberVariable(name, fallback, min, max) {
+  const raw = resolveCssVariable(name, String(fallback));
+  const parsed = Number.parseFloat(String(raw).replace(/px$/i, "").trim());
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function resolveTerminalFontSize() {
+  return resolveCssNumberVariable("--vscode-editor-font-size", 13, 11, 20);
+}
+
+function resolveTerminalLineHeight() {
+  const fontSize = resolveTerminalFontSize();
+  const lineHeightPx = resolveCssNumberVariable("--vscode-editor-line-height", fontSize * 1.45, fontSize, fontSize * 2.2);
+  const ratio = lineHeightPx / fontSize;
+  return Math.max(1.1, Math.min(1.8, ratio));
+}
+
+function resolveTerminalFontWeight() {
+  const raw = resolveCssVariable("--vscode-editor-font-weight", "400").trim();
+  return raw.length > 0 ? raw : "400";
+}
+
+function applyTerminalVisualOptions(terminal) {
+  if (!terminal) {
+    return;
+  }
+  terminal.options.theme = resolveTerminalTheme();
+  terminal.options.fontFamily = resolveTerminalFontFamily();
+  terminal.options.fontSize = resolveTerminalFontSize();
+  terminal.options.lineHeight = resolveTerminalLineHeight();
+  terminal.options.fontWeight = resolveTerminalFontWeight();
+  terminal.options.fontWeightBold = "700";
+}
+
 function fitTerminalInstance(instance) {
   if (!instance?.wrapper || !instance?.terminal) {
     return;
@@ -210,6 +247,7 @@ function ensureTerminalInstance(sessionId, mount) {
 
   const TerminalCtor = resolveTerminalConstructor();
   if (!TerminalCtor) {
+    wrapper.classList.add("agent-terminal-shell--fallback");
     wrapper.textContent = "xterm.js unavailable in this webview session.";
     const fallback = {
       terminal: null,
@@ -230,8 +268,14 @@ function ensureTerminalInstance(sessionId, mount) {
     cursorBlink: true,
     convertEol: false,
     scrollback: 6000,
-    fontSize: 13,
+    fontSize: resolveTerminalFontSize(),
     fontFamily: resolveTerminalFontFamily(),
+    lineHeight: resolveTerminalLineHeight(),
+    fontWeight: resolveTerminalFontWeight(),
+    fontWeightBold: "700",
+    letterSpacing: 0,
+    allowTransparency: true,
+    minimumContrastRatio: 1,
     theme: resolveTerminalTheme()
   });
 
@@ -380,6 +424,7 @@ function renderTerminalPanel() {
   }
 
   if (instance?.terminal) {
+    applyTerminalVisualOptions(instance.terminal);
     requestAnimationFrame(() => {
       fitTerminalInstance(instance);
     });
@@ -784,105 +829,107 @@ function autoResizeComposerInput() {
 }
 
 function createSessionCard(session) {
-  const card = document.createElement("section");
-  card.className = "card session-card";
-  if (state.selected?.kind === "session" && state.selected.id === session.sessionId) card.classList.add("selected");
+  const cls = classifySession(session);
   const collapsed = Boolean(state.sessionCollapse[session.sessionId]);
 
-  const top = document.createElement("div");
-  top.className = "session-head";
-  const title = document.createElement("div");
-  title.className = "title";
-  title.textContent = `${session.agentId} (${session.transport})`;
-  top.appendChild(title);
+  const row = document.createElement("div");
+  row.className = `session-row session-row--${cls}`;
+  if (state.selected?.kind === "session" && state.selected.id === session.sessionId) row.classList.add("selected");
+  if (session.pinned) row.classList.add("session-row--pinned");
 
+  // Header: dot + name + transport badge + hover actions
+  const header = document.createElement("div");
+  header.className = "session-row-header";
+
+  const dot = document.createElement("span");
+  dot.className = "session-status-dot";
+  dot.title = cls;
+  header.appendChild(dot);
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "session-row-title";
+  const nameSpan = document.createElement("span");
+  nameSpan.className = "session-row-name";
+  nameSpan.textContent = session.agentId;
+  titleWrap.appendChild(nameSpan);
+  const badge = document.createElement("span");
+  badge.className = "session-transport-badge";
+  badge.textContent = session.transport;
+  titleWrap.appendChild(badge);
+  header.appendChild(titleWrap);
+
+  // Compact action buttons (visible on hover / selection)
   const actions = document.createElement("div");
-  actions.className = "inline-actions";
-  const toggle = document.createElement("button");
-  toggle.className = "lane-action";
-  toggle.type = "button";
-  toggle.textContent = collapsed ? "Expand" : "Collapse";
-  toggle.onclick = (event) => {
-    event.stopPropagation();
-    state.sessionCollapse[session.sessionId] = !collapsed;
-    renderSessions();
-  };
-  actions.appendChild(toggle);
+  actions.className = "session-row-actions";
+
   const pin = document.createElement("button");
-  pin.className = "lane-action";
+  pin.className = "session-row-btn";
   pin.type = "button";
   pin.textContent = session.pinned ? "Unpin" : "Pin";
-  pin.onclick = (event) => {
-    event.stopPropagation();
-    vscode.postMessage({ type: "sessionPin", sessionId: session.sessionId, pinned: !session.pinned });
-  };
+  pin.title = session.pinned ? "Unpin session" : "Pin session";
+  pin.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "sessionPin", sessionId: session.sessionId, pinned: !session.pinned }); };
   actions.appendChild(pin);
+
   const archive = document.createElement("button");
-  archive.className = "lane-action";
+  archive.className = "session-row-btn";
   archive.type = "button";
   archive.textContent = session.archived ? "Restore" : "Archive";
-  archive.onclick = (event) => {
-    event.stopPropagation();
-    vscode.postMessage({ type: session.archived ? "sessionRestore" : "sessionArchive", sessionId: session.sessionId });
-  };
+  archive.title = session.archived ? "Restore session" : "Archive session";
+  archive.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: session.archived ? "sessionRestore" : "sessionArchive", sessionId: session.sessionId }); };
   actions.appendChild(archive);
+
   const openEditor = document.createElement("button");
-  openEditor.className = "lane-action";
+  openEditor.className = "session-row-btn session-row-btn--primary";
   openEditor.type = "button";
-  openEditor.textContent = "Open Editor";
-  openEditor.onclick = (event) => {
-    event.stopPropagation();
-    vscode.postMessage({ type: "openSessionEditor", sessionId: session.sessionId });
-  };
+  openEditor.textContent = "Open";
+  openEditor.title = "Open in editor";
+  openEditor.onclick = (e) => { e.stopPropagation(); vscode.postMessage({ type: "openSessionEditor", sessionId: session.sessionId }); };
   actions.appendChild(openEditor);
-  top.appendChild(actions);
-  card.appendChild(top);
 
+  header.appendChild(actions);
+  row.appendChild(header);
+
+  // Status meta line
   const meta = document.createElement("div");
-  meta.className = "meta-line";
-  meta.textContent = `${session.status} | heartbeat ${formatAge(session.lastHeartbeat)} | ${session.summary || ""}`;
-  card.appendChild(meta);
+  meta.className = "session-row-meta";
+  const metaParts = [session.status, `heartbeat ${formatAge(session.lastHeartbeat)}`];
+  if (session.summary) metaParts.push(session.summary);
+  meta.textContent = metaParts.join(" · ");
+  row.appendChild(meta);
 
+  // Expanded detail (repo / workspace)
   if (!collapsed) {
-    const scope = document.createElement("div");
-    scope.className = "meta-line secondary";
-    scope.textContent = `Repo: ${session.repository || "(none)"} | Branch: ${session.branch || "(none)"}`;
-    card.appendChild(scope);
-    const workspace = document.createElement("div");
-    workspace.className = "meta-line secondary";
-    workspace.textContent = `Workspace: ${session.workspace || "(none)"} | Updated: ${formatTime(session.updatedAt)}`;
-    card.appendChild(workspace);
-  } else {
-    card.appendChild(emptyText("Collapsed"));
+    const detail = document.createElement("div");
+    detail.className = "session-row-detail";
+    const repo = session.repository || "(none)";
+    const branch = session.branch || "(none)";
+    const ws = session.workspace ? session.workspace.replace(/.*[\\/]/, "") : "(none)";
+    detail.textContent = `${repo} / ${branch} · ${ws} · ${formatTime(session.updatedAt)}`;
+    row.appendChild(detail);
   }
 
-  card.onclick = () => {
-    if (state.sessionLockId) {
-      return;
-    }
+  row.onclick = (e) => {
+    if (state.sessionLockId || e.target.closest(".session-row-actions")) return;
     state.selected = { kind: "session", id: session.sessionId };
+    state.sessionCollapse[session.sessionId] = !collapsed;
     render();
   };
-  return card;
+  return row;
 }
 
 function renderSessionBucket(root, heading, sessions) {
-  const lane = document.createElement("section");
-  lane.className = "lane";
+  if (!sessions.length) return;
+  const bucket = document.createElement("div");
+  bucket.className = "session-bucket";
   const title = document.createElement("div");
-  title.className = "lane-title";
+  title.className = "session-bucket-heading";
   title.textContent = `${heading} (${sessions.length})`;
-  lane.appendChild(title);
-  if (!sessions.length) {
-    lane.appendChild(emptyText("No sessions"));
-    root.appendChild(lane);
-    return;
-  }
-  const cards = document.createElement("div");
-  cards.className = "lane-cards";
-  sessions.forEach((session) => cards.appendChild(createSessionCard(session)));
-  lane.appendChild(cards);
-  root.appendChild(lane);
+  bucket.appendChild(title);
+  const list = document.createElement("div");
+  list.className = "session-list";
+  sessions.forEach((session) => list.appendChild(createSessionCard(session)));
+  bucket.appendChild(list);
+  root.appendChild(bucket);
 }
 
 function renderSessions() {

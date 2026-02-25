@@ -229,7 +229,7 @@ export class DataService {
     const codexCliPath = stripWrappingQuotes(config.get<string>("codexCliPath", "codex").trim()) || "codex";
     const copilotCliPath = stripWrappingQuotes(config.get<string>("copilotCliPath", "copilot").trim()) || "copilot";
     const claudeCliPath = stripWrappingQuotes(config.get<string>("claudeCliPath", "claude").trim()) || "claude";
-    const geminiCliPath = stripWrappingQuotes(config.get<string>("geminiCliPath", "gemini").trim()) || "gemini";
+    const geminiCliPath = stripWrappingQuotes(config.get<string>("geminiCliPath", "npx -y @google/gemini-cli").trim()) || "npx -y @google/gemini-cli";
     const geminiCliAuthCommand = stripWrappingQuotes(config.get<string>("geminiCliAuthCommand", "auto").trim()) || "auto";
     const cliBootstrapOnStartup = config.get<boolean>("cliBootstrapOnStartup", true);
     const cliStartupSpawnPtyTerminals = config.get<boolean>("cliStartupSpawnPtyTerminals", true);
